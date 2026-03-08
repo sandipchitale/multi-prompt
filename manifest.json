@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Multi-Prompt Split View",
+  "version": "1.0",
+  "description": "Send a single prompt to two AI chatbots simultaneously using Chrome split view windows.",
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "windows",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://gemini.google.com/*",
+    "*://claude.ai/*",
+    "*://chatgpt.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Open Multi-Prompt Panel"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://gemini.google.com/app*"],
+      "js": ["content/gemini.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://claude.ai/*"],
+      "js": ["content/claude.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://chatgpt.com/*"],
+      "js": ["content/chatgpt.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
