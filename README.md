@@ -12,7 +12,7 @@ Instead of copying and pasting your prompts across different tabs, this extensio
 - **Persistent Side Panel UI:** A beautiful, responsive side UI that stays with you as you navigate the web.
 - **Smart "Ensure Tabs":** Click "Ensure tabs" to instantly verify the selected chatbots are open. If they aren't, it seamlessly launches them right next to each other.
 - **Master "New Chat" Control:** Instantly clear the conversational context and start fresh threads out of all selected models simultaneously.
-- **Intelligent Prompt Injection:** Send complex, multi-line prompts to all chosen AIs at once.
+- **Intelligent Prompt Injection:** Send complex, multi-line prompts to all chosen Chatbots at once.
 - **Keyboard Shortcuts:** Use `Shift + Enter` in the prompt box to send prompts without lifting your hands from the keyboard.
 
 ## How It Works ⚙️

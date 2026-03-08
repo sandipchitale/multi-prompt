@@ -9,6 +9,8 @@
   --accent-glow: rgba(90, 50, 250, 0.4);
   --error: #ff4757;
   --border-radius: 12px;
+  --btn-border: rgba(255, 255, 255, 0.4);
+  --btn-border-disabled: rgba(255, 255, 255, 0.2);
 }
 
 [data-theme="light"] {
@@ -19,6 +21,8 @@
   --accent: #5a32fa;
   --accent-glow: rgba(90, 50, 250, 0.2);
   --error: #e63946;
+  --btn-border: rgba(0, 0, 0, 0.3);
+  --btn-border-disabled: rgba(0, 0, 0, 0.15);
 }
 
 body {
@@ -117,11 +121,9 @@ h2 {
   grid-row: 5;
 }
 
-.swap-btn-left,
-.swap-btn-right-top,
-.swap-btn-right-bottom {
+.swap-btn {
   background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.4);
+  border: 1px solid var(--btn-border);
   color: var(--text-muted);
   border-radius: 8px;
   cursor: pointer;
@@ -132,20 +134,16 @@ h2 {
   padding: 8px;
 }
 
-.swap-btn-left:hover:not(:disabled),
-.swap-btn-right-top:hover:not(:disabled),
-.swap-btn-right-bottom:hover:not(:disabled) {
+.swap-btn:hover:not(:disabled) {
   background: rgba(90, 50, 250, 0.1);
   color: var(--accent);
   border-color: var(--accent);
 }
 
-.swap-btn-left:disabled,
-.swap-btn-right-top:disabled,
-.swap-btn-right-bottom:disabled {
+.swap-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
-  border-color: rgba(255, 255, 255, 0.2);
+  border-color: var(--btn-border-disabled);
 }
 
 .cyber-checkbox {
