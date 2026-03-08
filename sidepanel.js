@@ -45,6 +45,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const promptInput = document.getElementById('prompt-input');
   const errorMsg = document.getElementById('error-msg');
 
+  const swapGemChat = document.getElementById('swap-gemini-chatgpt');
+  const swapGemClau = document.getElementById('swap-gemini-claude');
+  const swapClauChat = document.getElementById('swap-claude-chatgpt');
+
   // Load saved checkbox selections
   chrome.storage.local.get(['selectedModels'], (result) => {
     if (result.selectedModels) {
@@ -56,11 +60,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   function updateState() {
-    const selected = Array.from(checkboxes).filter(cb => cb.checked);
+    const selectedNodes = Array.from(checkboxes).filter(cb => cb.checked);
+    const selected = selectedNodes.map(cb => cb.value);
     const hasText = promptInput.value.trim().length > 0;
     const newChatBtn = document.getElementById('new-chat-btn');
     
-    if (selected.length === 0) {
+    if (selectedNodes.length === 0) {
       errorMsg.textContent = "Please select at least 1 chatbot.";
       errorMsg.classList.remove('hidden');
       sendBtn.disabled = true;
@@ -72,6 +77,10 @@ document.addEventListener('DOMContentLoaded', () => {
       launchBtn.disabled = false;
       newChatBtn.disabled = false;
     }
+
+    if (swapGemChat) swapGemChat.disabled = !(selected.includes('gemini') && selected.includes('chatgpt'));
+    if (swapGemClau) swapGemClau.disabled = !(selected.includes('gemini') && selected.includes('claude'));
+    if (swapClauChat) swapClauChat.disabled = !(selected.includes('claude') && selected.includes('chatgpt'));
   }
 
   checkboxes.forEach(cb => {
@@ -165,6 +174,32 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
   });
+
+  // SWAP BUTTONS
+  function initSwapButton(btn, model1, model2) {
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const svg = btn.innerHTML;
+        btn.innerHTML = `<span style="font-size:0.75rem">...</span>`;
+        btn.disabled = true;
+        
+        chrome.runtime.sendMessage({
+          action: 'swap_tabs',
+          model1: model1,
+          model2: model2
+        }, () => {
+          setTimeout(() => {
+            btn.innerHTML = svg;
+            updateState();
+          }, 300);
+        });
+      });
+    }
+  }
+
+  initSwapButton(swapGemChat, 'gemini', 'chatgpt');
+  initSwapButton(swapGemClau, 'gemini', 'claude');
+  initSwapButton(swapClauChat, 'claude', 'chatgpt');
 
   // Initial state check
   updateState();

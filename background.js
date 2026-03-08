@@ -21,6 +21,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'new_chat') {
     sendActionToTabs(request.models, 'new_chat');
     sendResponse({ status: 'new_chat_sent' });
+  } else if (request.action === 'swap_tabs') {
+    swapTabs(request.model1, request.model2);
+    sendResponse({ status: 'swapping' });
   }
 });
 
@@ -147,4 +150,29 @@ function attemptInjection(tabId, prompt, attempt) {
         console.log("Successfully delivered prompt to tab " + tabId);
      }
   });
+}
+
+// Swap specific AI tabs by exchanging their URLs
+async function swapTabs(model1, model2) {
+  try {
+    const allTabs = await chrome.tabs.query({});
+    
+    const urlBase1 = AI_URLS[model1].split('/')[2];
+    const urlBase2 = AI_URLS[model2].split('/')[2];
+
+    const tab1 = allTabs.find(t => t.url && t.url.includes(urlBase1));
+    const tab2 = allTabs.find(t => t.url && t.url.includes(urlBase2));
+
+    if (tab1 && tab2) {
+      const url1 = tab1.url;
+      const url2 = tab2.url;
+
+      await chrome.tabs.update(tab1.id, { url: url2 });
+      await chrome.tabs.update(tab2.id, { url: url1 });
+    } else {
+      console.warn(`Could not find both tabs to swap: ${model1}, ${model2}`);
+    }
+  } catch (err) {
+    console.error("Failed to swap tabs:", err);
+  }
 }
