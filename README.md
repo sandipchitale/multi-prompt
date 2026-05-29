@@ -1,30 +1,27 @@
 # Multi-Prompt Chrome Extension 🚀
 
-The Multi-Prompt Chrome Extension is a powerful productivity tool that allows you to control multiple AI chatbots—Gemini, Claude, and ChatGPT—simultaneously from a single, persistent Side Panel interface.
+The Multi-Prompt Chrome Extension is a powerful productivity tool that allows you to tile multiple AI chatbots—Gemini, Claude, and ChatGPT—side-by-side on your screen and synchronize your prompts across all of them in real-time.
 
-Instead of copying and pasting your prompts across different tabs, this extension puppets the native web interfaces of the chatbots, allowing you to seamlessly start new chats, launch missing tabs, and inject prompts into all of them with a single click or keyboard shortcut.
-
-![Multi-prompt extension](screenshots/multi-prompt.png)
+Instead of typing prompts inside an extension panel, this extension allows you to type and submit a prompt in **any** of the open chatbot windows, and it will automatically broadcast and submit that same prompt in all other active chatbot windows.
 
 ## Features ✨
 
 - **Multi-Model Support:** Select any combination of Gemini, Claude, and ChatGPT (from 1 to all 3).
-- **Persistent Side Panel UI:** A beautiful, responsive side UI that stays with you as you navigate the web.
-- **Smart "Ensure Tabs":** Click "Ensure tabs" to instantly verify the selected chatbots are open. If they aren't, it seamlessly launches them right next to each other.
-- **Master "New Chat" Control:** Instantly clear the conversational context and start fresh threads out of all selected models simultaneously.
-- **Intelligent Prompt Injection:** Send complex, multi-line prompts to all chosen Chatbots at once.
-- **Keyboard Shortcuts:** Use `Shift + Enter` in the prompt box to send prompts without lifting your hands from the keyboard.
+- **Bidirectional Prompt Broadcasting:** Type your prompt natively in Claude, Gemini, or ChatGPT, and watch it automatically replicate and submit in the other tiled windows.
+- **Smart "Tile Windows":** Click "Tile Windows" in the extension popup to automatically position and size your selected chatbots side-by-side across your screen. 
+- **Visual Tiling Order & Swapping:** Arrange the layout order of your windows (Left-to-Right) directly from the popup. Swapping windows physically slides them on screen without page reloads or losing your active chat states.
+- **Master "New Chat" Control:** Instantly clear the conversational context and start fresh threads on all active models simultaneously with one click.
+- **Selective Syncing:** Only prompts typed inside the extension-managed tiled windows are synchronized. Chatbots opened by you in normal tabs are ignored.
 
 ## How It Works ⚙️
 
-Because modern AI chatbots enforce strict Cross-Origin Resource Sharing (CORS) and `X-Frame-Options` headers to prevent their UI from being embedded in `<iframe>` tags, embedding them directly into an extension is impossible.
+Because modern AI chatbots enforce strict security policies, this extension uses a combination of a **Background Service Worker** and **Chrome Content Scripts**:
 
-This extension solves that problem by using **Chrome Content Scripts**.
-
-1. The **Side Panel** acts as the command center, capturing your prompt and selections.
-2. It sends instructions down to a **Background Service Worker** (`background.js`).
-3. The Service worker routes those instructions to **Content Scripts** (`content/*.js`) which are invisibly injected onto the active AI websites.
-4. These scripts emulate real human behavior—locating the specific React/ProseMirror DOM elements, injecting the text, dispatching synthetic keystroke events, and clicking the "Send" or "New Chat" buttons for you natively!
+1. The **Extension Popup** acts as the configuration dashboard, allowing you to select active models and tile them.
+2. **Content Scripts** (`content/*.js`) are injected onto the chatbot pages to listen for user submissions (either hitting Enter or clicking Send).
+3. When a submission is detected in an extension-managed window, the content script forwards the prompt text to the **Background Service Worker** (`background.js`).
+4. The background worker verifies that the source tab belongs to a tiled window, and forwards the prompt to all other active chatbot content scripts.
+5. Target content scripts inject the text natively and trigger the submit handlers of Claude, Gemini, or ChatGPT.
 
 ## Installation from Source 💻
 

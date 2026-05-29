@@ -67,12 +67,60 @@ function startNewChatGPTChat() {
     }
 }
 
+let isProgrammaticInput = false;
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'inject_prompt') {
+    isProgrammaticInput = true;
     injectIntoChatGPT(request.prompt);
     sendResponse({ success: true });
+    setTimeout(() => {
+      isProgrammaticInput = false;
+    }, 2500); // Safety reset after programmatic injection
   } else if (request.action === 'new_chat') {
     startNewChatGPTChat();
     sendResponse({ success: true });
   }
 });
+
+// Intercept user-initiated submissions and broadcast to background
+document.addEventListener('keydown', (e) => {
+  if (isProgrammaticInput) return;
+  
+  if (e.key === 'Enter' && !e.shiftKey) {
+    const inputField = e.target.closest('#prompt-textarea, [contenteditable="true"]');
+    if (inputField) {
+      const prompt = (inputField.value || inputField.innerText || '').trim();
+      if (prompt) {
+        chrome.runtime.sendMessage({
+          action: 'broadcast_prompt',
+          prompt: prompt,
+          source: 'chatgpt'
+        }, () => {
+          const err = chrome.runtime.lastError;
+        });
+      }
+    }
+  }
+}, true);
+
+document.addEventListener('mousedown', (e) => {
+  if (isProgrammaticInput) return;
+  
+  const sendBtn = e.target.closest('button[data-testid="send-button"], button[aria-label*="Send"], button:has(svg)');
+  if (sendBtn) {
+    const inputField = document.querySelector('#prompt-textarea, [contenteditable="true"]');
+    if (inputField) {
+      const prompt = (inputField.value || inputField.innerText || '').trim();
+      if (prompt) {
+        chrome.runtime.sendMessage({
+          action: 'broadcast_prompt',
+          prompt: prompt,
+          source: 'chatgpt'
+        }, () => {
+          const err = chrome.runtime.lastError;
+        });
+      }
+    }
+  }
+}, true);

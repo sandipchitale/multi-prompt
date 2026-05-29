@@ -4,16 +4,20 @@ const AI_URLS = {
   chatgpt: "https://chatgpt.com/"
 };
 
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((error) => console.error(error));
+// Set of active window IDs created/managed by the extension
+const extensionWindowIds = new Set();
+
+// Clean up closed windows
+chrome.windows.onRemoved.addListener((windowId) => {
+  extensionWindowIds.delete(windowId);
+});
 
 // Map of tabId -> prompt string to handle lazy injections
 const activePromptTabs = new Map();
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'launch_tabs') {
-    launchTabsIfMissing(request.models);
+    tileWindows(request.models, request.screenInfo);
     sendResponse({ status: 'launched' });
   } else if (request.action === 'send_prompt') {
     sendPromptToTabs(request.models, request.prompt);
@@ -24,38 +28,74 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'swap_tabs') {
     swapTabs(request.model1, request.model2);
     sendResponse({ status: 'swapping' });
+  } else if (request.action === 'broadcast_prompt') {
+    handleBroadcast(request.prompt, request.source, sender);
+    sendResponse({ status: 'broadcasted' });
   }
 });
 
-async function launchTabsIfMissing(models) {
+async function tileWindows(models, screenInfo) {
   try {
-    const currentWindow = await chrome.windows.getCurrent();
-    const allTabs = await chrome.tabs.query({ windowId: currentWindow.id });
+    const { availLeft, availTop, availWidth, availHeight } = screenInfo;
+    const N = models.length;
+    if (N === 0) return;
 
-    // For each chosen model, check if a tab already exists
-    let activeTabIdx = -1;
-    
-    for (const model of models) {
-      const urlBase = AI_URLS[model].split('/')[2]; // e.g., gemini.google.com
+    const width = Math.floor(availWidth / N);
+    const height = availHeight;
+
+    const allTabs = await chrome.tabs.query({});
+
+    for (let i = 0; i < N; i++) {
+      const model = models[i];
+      const urlBase = AI_URLS[model].split('/')[2];
       const existingTab = allTabs.find(t => t.url && t.url.includes(urlBase));
 
-      if (!existingTab) {
-        // Find the index of the active tab to place new tabs right next to it
-        if (activeTabIdx === -1) {
-            const activeMatch = allTabs.find(t => t.active);
-            activeTabIdx = activeMatch ? activeMatch.index : allTabs.length - 1;
+      const left = availLeft + (i * width);
+      const top = availTop;
+
+      if (existingTab) {
+        // Check how many tabs are in the existing window
+        const tabsInWindow = await chrome.tabs.query({ windowId: existingTab.windowId });
+        if (tabsInWindow.length === 1) {
+          // Window has only 1 tab. Just move and resize it.
+          await chrome.windows.update(existingTab.windowId, {
+            state: "normal",
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            focused: true
+          });
+          extensionWindowIds.add(existingTab.windowId);
+        } else {
+          // Tab is in a window with other tabs. Extract it to its own window at the tiled coordinates.
+          const newWin = await chrome.windows.create({
+            tabId: existingTab.id,
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            focused: true,
+            type: "normal"
+          });
+          extensionWindowIds.add(newWin.id);
         }
-        
-        await chrome.tabs.create({
+      } else {
+        // Tab does not exist at all. Create a new window for it.
+        const newWin = await chrome.windows.create({
           url: AI_URLS[model],
-          index: activeTabIdx + 1,
-          active: false
+          left: left,
+          top: top,
+          width: width,
+          height: height,
+          focused: true,
+          type: "normal"
         });
-        activeTabIdx++; // Increment so the next one goes next to this one
+        extensionWindowIds.add(newWin.id);
       }
     }
   } catch (err) {
-    console.error("Failed to launch AI tabs:", err);
+    console.error("Failed to tile windows:", err);
   }
 }
 
@@ -164,15 +204,80 @@ async function swapTabs(model1, model2) {
     const tab2 = allTabs.find(t => t.url && t.url.includes(urlBase2));
 
     if (tab1 && tab2) {
-      const url1 = tab1.url;
-      const url2 = tab2.url;
+      if (tab1.windowId !== tab2.windowId) {
+        const win1 = await chrome.windows.get(tab1.windowId);
+        const win2 = await chrome.windows.get(tab2.windowId);
 
-      await chrome.tabs.update(tab1.id, { url: url2 });
-      await chrome.tabs.update(tab2.id, { url: url1 });
+        // Swap position and size
+        await chrome.windows.update(win1.id, {
+          state: "normal",
+          left: win2.left,
+          top: win2.top,
+          width: win2.width,
+          height: win2.height
+        });
+
+        await chrome.windows.update(win2.id, {
+          state: "normal",
+          left: win1.left,
+          top: win1.top,
+          width: win1.width,
+          height: win1.height
+        });
+      } else {
+        // Fallback: if they are in the same window, just swap their URLs
+        const url1 = tab1.url;
+        const url2 = tab2.url;
+
+        await chrome.tabs.update(tab1.id, { url: url2 });
+        await chrome.tabs.update(tab2.id, { url: url1 });
+      }
     } else {
       console.warn(`Could not find both tabs to swap: ${model1}, ${model2}`);
     }
   } catch (err) {
-    console.error("Failed to swap tabs:", err);
+    console.error("Failed to swap tabs/windows:", err);
+  }
+}
+
+async function handleBroadcast(prompt, source, sender) {
+  try {
+    // Only broadcast if the source window is one of our tiled windows
+    if (!sender.tab || !extensionWindowIds.has(sender.tab.windowId)) {
+      console.log(`Blocked broadcast: source window ${sender.tab ? sender.tab.windowId : 'undefined'} is not extension-managed.`);
+      return;
+    }
+
+    // Load current selectedModels to know who to broadcast to
+    chrome.storage.local.get(['selectedModels'], async (result) => {
+      const selected = result.selectedModels || ['gemini', 'claude', 'chatgpt'];
+      
+      // Filter out the source model
+      const targetModels = selected.filter(m => m !== source);
+      
+      const allTabs = await chrome.tabs.query({});
+      
+      for (const model of targetModels) {
+        const urlBase = AI_URLS[model].split('/')[2];
+        const tab = allTabs.find(t => t.url && t.url.includes(urlBase));
+        
+        // Only inject if the target tab is in our extensionWindowIds set
+        if (tab && extensionWindowIds.has(tab.windowId)) {
+          // Send prompt to this tab!
+          chrome.tabs.sendMessage(tab.id, {
+            action: 'inject_prompt',
+            prompt: prompt
+          }, (response) => {
+             if (chrome.runtime.lastError) {
+                console.warn(`Could not deliver broadcast to ${model}:`, chrome.runtime.lastError);
+             } else {
+                console.log(`Delivered broadcast to ${model}`);
+             }
+          });
+        }
+      }
+    });
+  } catch (err) {
+    console.error("Broadcast failed:", err);
   }
 }

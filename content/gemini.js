@@ -1,7 +1,13 @@
+let isProgrammaticInput = false;
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'inject_prompt') {
+    isProgrammaticInput = true;
     injectIntoGemini(request.prompt);
     sendResponse({ success: true });
+    setTimeout(() => {
+      isProgrammaticInput = false;
+    }, 2500); // Safety reset after programmatic injection
   }
 });
 
@@ -80,3 +86,45 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ success: true });
   }
 });
+
+// Intercept user-initiated submissions and broadcast to background
+document.addEventListener('keydown', (e) => {
+  if (isProgrammaticInput) return;
+  
+  if (e.key === 'Enter' && !e.shiftKey) {
+    const inputField = e.target.closest('rich-textarea div[contenteditable="true"], .ProseMirror, [contenteditable="true"]');
+    if (inputField) {
+      const prompt = inputField.innerText.trim();
+      if (prompt) {
+        chrome.runtime.sendMessage({
+          action: 'broadcast_prompt',
+          prompt: prompt,
+          source: 'gemini'
+        }, () => {
+          const err = chrome.runtime.lastError;
+        });
+      }
+    }
+  }
+}, true);
+
+document.addEventListener('mousedown', (e) => {
+  if (isProgrammaticInput) return;
+  
+  const sendBtn = e.target.closest('button[aria-label*="Send message"], .send-button, button:has(.send-icon), button:has(svg)');
+  if (sendBtn) {
+    const inputField = document.querySelector('rich-textarea div[contenteditable="true"], .ProseMirror, [contenteditable="true"]');
+    if (inputField) {
+      const prompt = inputField.innerText.trim();
+      if (prompt) {
+        chrome.runtime.sendMessage({
+          action: 'broadcast_prompt',
+          prompt: prompt,
+          source: 'gemini'
+        }, () => {
+          const err = chrome.runtime.lastError;
+        });
+      }
+    }
+  }
+}, true);
