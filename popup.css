@@ -32,7 +32,7 @@ body {
   margin: 0;
   padding: 16px;
   box-sizing: border-box;
-  width: 340px; /* Fixed width for Extension Popup */
+  width: 380px; /* Fixed width for Extension Popup */
 }
 
 .container {
@@ -212,7 +212,7 @@ h2 {
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .preview-chip {
