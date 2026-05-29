@@ -4,6 +4,18 @@ const AI_URLS = {
   chatgpt: "https://chatgpt.com/"
 };
 
+// Match a tab to a model by comparing hostnames, so a stray URL that merely
+// contains the host string somewhere (e.g. in a query parameter) is not
+// mistaken for the chatbot tab.
+function tabMatchesModel(tab, model) {
+  if (!tab.url) return false;
+  try {
+    return new URL(tab.url).hostname === new URL(AI_URLS[model]).hostname;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Helper functions for session storage of managed windows
 async function getManagedWindowIds() {
   const result = await chrome.storage.session.get(['managedWindowIds']);
@@ -32,16 +44,10 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
   await removeManagedWindowId(windowId);
 });
 
-// Map of tabId -> prompt string to handle lazy injections
-const activePromptTabs = new Map();
-
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'launch_tabs') {
     tileWindows(request.models, request.screenInfo);
     sendResponse({ status: 'launched' });
-  } else if (request.action === 'send_prompt') {
-    sendPromptToTabs(request.models, request.prompt);
-    sendResponse({ status: 'sent' });
   } else if (request.action === 'new_chat') {
     sendActionToTabs(request.models, 'new_chat');
     sendResponse({ status: 'new_chat_sent' });
@@ -60,18 +66,20 @@ async function tileWindows(models, screenInfo) {
     const N = models.length;
     if (N === 0) return;
 
-    const width = Math.floor(availWidth / N);
+    const baseWidth = Math.floor(availWidth / N);
     const height = availHeight;
 
     const allTabs = await chrome.tabs.query({});
 
     for (let i = 0; i < N; i++) {
       const model = models[i];
-      const urlBase = AI_URLS[model].split('/')[2];
-      const existingTab = allTabs.find(t => t.url && t.url.includes(urlBase));
+      const existingTab = allTabs.find(t => tabMatchesModel(t, model));
 
-      const left = availLeft + (i * width);
+      const left = availLeft + (i * baseWidth);
       const top = availTop;
+      // Give the last window any leftover pixels so the row spans the full
+      // width instead of leaving a gap when availWidth isn't divisible by N.
+      const width = (i === N - 1) ? (availWidth - i * baseWidth) : baseWidth;
 
       if (existingTab) {
         // Check how many tabs are in the existing window
@@ -124,8 +132,7 @@ async function sendActionToTabs(models, actionType) {
         const allTabs = await chrome.tabs.query({});
 
         for (const model of models) {
-            const urlBase = AI_URLS[model].split('/')[2]; 
-            const existingTab = allTabs.find(t => t.url && t.url.includes(urlBase));
+            const existingTab = allTabs.find(t => tabMatchesModel(t, model));
 
             if (existingTab) {
                 chrome.tabs.sendMessage(existingTab.id, {
@@ -146,82 +153,13 @@ async function sendActionToTabs(models, actionType) {
     }
 }
 
-async function sendPromptToTabs(models, prompt) {
-    try {
-        const currentWindow = await chrome.windows.getCurrent();
-        const allTabs = await chrome.tabs.query({});
-        
-        // Ensure new tabs are placed sensibly if we have to open them
-        const tabsInCurrentWindow = allTabs.filter(t => t.windowId === currentWindow.id);
-        const activeMatch = tabsInCurrentWindow.find(t => t.active);
-        let placementIndex = activeMatch ? activeMatch.index + 1 : tabsInCurrentWindow.length;
-
-        for (const model of models) {
-            const urlBase = AI_URLS[model].split('/')[2]; 
-            const existingTab = allTabs.find(t => t.url && t.url.includes(urlBase));
-
-            if (existingTab) {
-                if (existingTab.status === 'loading') {
-                    activePromptTabs.set(existingTab.id, prompt);
-                } else {
-                    attemptInjection(existingTab.id, prompt, 0);
-                }
-            } else {
-                // Tab doesn't exist anywhere! Let's launch it.
-                console.log(`Tab for ${model} missing. Opening on demand...`);
-                const newTab = await chrome.tabs.create({
-                    url: AI_URLS[model],
-                    index: placementIndex,
-                    active: false
-                });
-                placementIndex++;
-                
-                // Set the prompt in the queue so it injects when it finishes loading
-                activePromptTabs.set(newTab.id, prompt);
-            }
-        }
-    } catch (err) {
-        console.error("Failed to send prompt:", err);
-    }
-}
-
-// Track when queued tabs finish loading to inject prompt
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && activePromptTabs.has(tabId)) {
-    const prompt = activePromptTabs.get(tabId);
-    activePromptTabs.delete(tabId);
-    attemptInjection(tabId, prompt, 0);
-  }
-});
-
-function attemptInjection(tabId, prompt, attempt) {
-  if (attempt > 15) {
-     console.log("Max injection attempts reached for tab " + tabId);
-     return;
-  }
-  
-  chrome.tabs.sendMessage(tabId, {
-    action: 'inject_prompt',
-    prompt: prompt
-  }, (response) => {
-     if (chrome.runtime.lastError) {
-        setTimeout(() => attemptInjection(tabId, prompt, attempt + 1), 1000);
-     } else {
-        console.log("Successfully delivered prompt to tab " + tabId);
-     }
-  });
-}
-
-// Swap specific AI tabs by exchanging their URLs
+// Swap specific AI tabs by exchanging their window positions
 async function swapTabs(model1, model2) {
   try {
     const allTabs = await chrome.tabs.query({});
-    
-    const urlBase1 = AI_URLS[model1].split('/')[2];
-    const urlBase2 = AI_URLS[model2].split('/')[2];
 
-    const tab1 = allTabs.find(t => t.url && t.url.includes(urlBase1));
-    const tab2 = allTabs.find(t => t.url && t.url.includes(urlBase2));
+    const tab1 = allTabs.find(t => tabMatchesModel(t, model1));
+    const tab2 = allTabs.find(t => tabMatchesModel(t, model2));
 
     if (tab1 && tab2) {
       if (tab1.windowId !== tab2.windowId) {
@@ -281,9 +219,8 @@ async function handleBroadcast(prompt, source, sender) {
       const allTabs = await chrome.tabs.query({});
       
       for (const model of targetModels) {
-        const urlBase = AI_URLS[model].split('/')[2];
-        const tab = allTabs.find(t => t.url && t.url.includes(urlBase));
-        
+        const tab = allTabs.find(t => tabMatchesModel(t, model));
+
         if (tab) {
           const isManaged = managedIds.has(tab.windowId);
           

@@ -6,7 +6,6 @@
   "permissions": [
     "tabs",
     "windows",
-    "scripting",
     "storage"
   ],
   "host_permissions": [
@@ -24,17 +23,17 @@
   "content_scripts": [
     {
       "matches": ["*://gemini.google.com/app*"],
-      "js": ["content/gemini.js"],
+      "js": ["content/common.js", "content/gemini.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://claude.ai/*"],
-      "js": ["content/claude.js"],
+      "js": ["content/common.js", "content/claude.js"],
       "run_at": "document_idle"
     },
     {
       "matches": ["*://chatgpt.com/*"],
-      "js": ["content/chatgpt.js"],
+      "js": ["content/common.js", "content/chatgpt.js"],
       "run_at": "document_idle"
     }
   ]
