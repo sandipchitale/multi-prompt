@@ -23,5 +23,26 @@ MultiPrompt.init({
     } else {
       window.location.href = 'https://chatgpt.com/';
     }
+  },
+  extractHistory() {
+    const history = [];
+    const rawElements = document.querySelectorAll('[data-message-author-role]');
+    const elements = MultiPrompt.filterNested(rawElements);
+    elements.forEach(el => {
+      const role = el.getAttribute('data-message-author-role');
+      if (role === 'user') {
+        const text = el.innerText.trim();
+        if (text) {
+          history.push({ role: 'user', text: text });
+        }
+      } else if (role === 'assistant') {
+        const markdownEl = el.querySelector('.markdown');
+        const text = markdownEl ? MultiPrompt.nodeToMarkdown(markdownEl).trim() : el.innerText.trim();
+        if (text) {
+          history.push({ role: 'assistant', text: text });
+        }
+      }
+    });
+    return history;
   }
 });

@@ -21,5 +21,29 @@ MultiPrompt.init({
     } else {
       window.location.href = 'https://gemini.google.com/app';
     }
+  },
+  extractHistory() {
+    const history = [];
+    const rawElements = document.querySelectorAll('user-query, .query-text, message-content, .message-content');
+    const elements = MultiPrompt.filterNested(rawElements);
+    elements.forEach(el => {
+      const isUser = el.tagName === 'USER-QUERY' || el.classList.contains('query-text');
+      if (isUser) {
+        let text = el.innerText.trim();
+        // Remove screen-reader friendly prefix "You said"
+        if (text.startsWith("You said\n") || text.startsWith("You said")) {
+          text = text.replace(/^You said\s*/i, "").trim();
+        }
+        if (text) {
+          history.push({ role: 'user', text: text });
+        }
+      } else {
+        const text = MultiPrompt.nodeToMarkdown(el).trim();
+        if (text) {
+          history.push({ role: 'assistant', text: text });
+        }
+      }
+    });
+    return history;
   }
 });

@@ -33,6 +33,7 @@ body {
   padding: 16px;
   box-sizing: border-box;
   width: 380px; /* Fixed width for Extension Popup */
+  min-height: 500px;
 }
 
 .container {
@@ -377,4 +378,70 @@ h2 {
   background: var(--accent);
   color: white;
   box-shadow: 0 0 8px var(--accent-glow);
+}
+
+/* Export Section Styling */
+.export-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background-color: var(--panel-bg);
+  padding: 10px 14px;
+  border-radius: var(--border-radius);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="light"] .export-section {
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.export-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.export-select {
+  flex-grow: 1;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+[data-theme="light"] .export-select {
+  background-color: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.export-select:focus {
+  border-color: var(--accent);
+}
+
+.export-select option {
+  background-color: var(--panel-bg);
+  color: var(--text-main);
+}
+
+.glow-button.mini {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  height: 35px;
+  box-sizing: border-box;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.button-row button {
+  flex: 1;
 }

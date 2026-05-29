@@ -25,5 +25,30 @@ MultiPrompt.init({
     } else {
       window.location.href = 'https://claude.ai/new';
     }
+  },
+  extractHistory() {
+    const history = [];
+    const rawElements = document.querySelectorAll(
+      '[data-testid="user-message"], .font-user-message, [class*="font-user"], ' +
+      '[data-testid="claude-message"], .font-claude-message, .font-claude-response, [class*="font-claude"]'
+    );
+    const elements = MultiPrompt.filterNested(rawElements);
+    elements.forEach(el => {
+      const isUser = el.getAttribute('data-testid') === 'user-message' || 
+                     el.classList.contains('font-user-message') ||
+                     Array.from(el.classList).some(cls => cls.includes('font-user'));
+      if (isUser) {
+        const text = el.innerText.trim();
+        if (text) {
+          history.push({ role: 'user', text: text });
+        }
+      } else {
+        const text = MultiPrompt.nodeToMarkdown(el).trim();
+        if (text) {
+          history.push({ role: 'assistant', text: text });
+        }
+      }
+    });
+    return history;
   }
 });

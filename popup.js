@@ -44,6 +44,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const errorMsg = document.getElementById('error-msg');
   const layoutPreviewSection = document.getElementById('layout-preview-section');
   const layoutPreviewContainer = document.getElementById('layout-preview-container');
+  const exportBtn = document.getElementById('export-btn');
+  const exportFormat = document.getElementById('export-format');
+  const closeTilesBtn = document.getElementById('close-tiles-btn');
 
   // We maintain an ordered array of selected models: e.g. ['gemini', 'claude']
   let selectedModels = [];
@@ -137,11 +140,18 @@ document.addEventListener('DOMContentLoaded', () => {
       errorMsg.classList.remove('hidden');
       launchBtn.disabled = true;
       newChatBtn.disabled = true;
+      if (exportBtn) exportBtn.disabled = true;
     } else {
       errorMsg.classList.add('hidden');
       launchBtn.disabled = false;
       newChatBtn.disabled = false;
+      if (exportBtn) exportBtn.disabled = false;
     }
+
+    chrome.storage.session.get(['managedWindowIds'], (result) => {
+      const hasTiles = result.managedWindowIds && result.managedWindowIds.length > 0;
+      if (closeTilesBtn) closeTilesBtn.disabled = !hasTiles;
+    });
 
     renderLayoutPreview();
   }
@@ -212,6 +222,117 @@ document.addEventListener('DOMContentLoaded', () => {
           updateState();
         }, 800);
       });
+    }
+  });
+
+  // EXPORT CHATS BUTTON
+  if (exportBtn) {
+    exportBtn.addEventListener('click', () => {
+      if (selectedModels.length > 0) {
+        const textSpan = exportBtn.querySelector('.btn-text');
+        const originalText = textSpan.textContent;
+        textSpan.textContent = "Exporting...";
+        exportBtn.disabled = true;
+
+        chrome.runtime.sendMessage({
+          action: 'export_chats',
+          models: selectedModels
+        }, (response) => {
+          const err = chrome.runtime.lastError;
+          
+          if (err || !response || response.status === 'error') {
+            console.error("Export failed:", err || response?.error);
+            alert("Export failed. Make sure your tiled chatbot windows are open and active.");
+            textSpan.textContent = originalText;
+            updateState();
+            return;
+          }
+
+          const history = response.history;
+          const format = exportFormat ? exportFormat.value : 'markdown';
+
+          if (format === 'markdown') {
+            const mdContent = generateMarkdown(history);
+            const dateStr = new Date().toISOString().slice(0, 10);
+            downloadFile(mdContent, `multi-prompt-chats-${dateStr}.md`, 'text/markdown');
+          } else if (format === 'pdf') {
+            // Save to storage and open export page
+            chrome.storage.local.set({ lastExportedHistory: history }, () => {
+              chrome.tabs.create({ url: chrome.runtime.getURL('export.html') });
+            });
+          }
+
+          setTimeout(() => {
+            textSpan.textContent = originalText;
+            updateState();
+          }, 1000);
+        });
+      }
+    });
+  }
+
+  function generateMarkdown(history) {
+    let md = `# Multi-Prompt Conversation Export\n`;
+    md += `Exported on: ${new Date().toLocaleString()}\n\n`;
+    md += `---\n\n`;
+
+    const modelNames = {
+      gemini: 'Gemini',
+      claude: 'Claude',
+      chatgpt: 'ChatGPT'
+    };
+
+    Object.entries(history).forEach(([model, messages]) => {
+      if (!messages || messages.length === 0) return;
+      
+      const name = modelNames[model] || model;
+      md += `## 🤖 ${name} Chat\n\n`;
+      
+      messages.forEach(msg => {
+        const roleName = msg.role === 'user' ? 'User' : name;
+        md += `**${roleName}**:\n${msg.text}\n\n`;
+      });
+      
+      md += `---\n\n`;
+    });
+    
+    return md;
+  }
+
+  function downloadFile(content, filename, contentType) {
+    const blob = new Blob([content], { type: contentType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // CLOSE TILES BUTTON
+  if (closeTilesBtn) {
+    closeTilesBtn.addEventListener('click', () => {
+      const textSpan = closeTilesBtn.querySelector('.btn-text');
+      const originalText = textSpan.textContent;
+      textSpan.textContent = "Closing...";
+      closeTilesBtn.disabled = true;
+      
+      chrome.runtime.sendMessage({ action: 'close_tiles' }, (response) => {
+        const err = chrome.runtime.lastError;
+        setTimeout(() => {
+          textSpan.textContent = originalText;
+          updateState();
+        }, 800);
+      });
+    });
+  }
+
+  // Listen for storage changes to keep UI in sync
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === 'session' && changes.managedWindowIds) {
+      updateState();
     }
   });
 

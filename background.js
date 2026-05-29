@@ -57,8 +57,68 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'broadcast_prompt') {
     handleBroadcast(request.prompt, request.source, sender);
     sendResponse({ status: 'broadcasted' });
+  } else if (request.action === 'export_chats') {
+    handleExport(request.models).then(history => {
+      sendResponse({ status: 'success', history: history });
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true; // Keep message channel open for async response
+  } else if (request.action === 'close_tiles') {
+    closeTiledWindows().then(() => {
+      sendResponse({ status: 'closed' });
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true;
   }
 });
+
+async function closeTiledWindows() {
+  const ids = await getManagedWindowIds();
+  for (const windowId of ids) {
+    try {
+      await chrome.windows.remove(windowId);
+    } catch (e) {
+      console.warn(`Window ${windowId} was already closed or could not be removed:`, e);
+    }
+  }
+  await chrome.storage.session.set({ managedWindowIds: [] });
+}
+
+async function handleExport(models) {
+  const allTabs = await chrome.tabs.query({});
+  const managedWindowIds = await getManagedWindowIds();
+  const results = {};
+
+  for (const model of models) {
+    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedWindowIds.has(t.windowId));
+    if (tab) {
+      try {
+        const response = await new Promise((resolve, reject) => {
+          chrome.tabs.sendMessage(tab.id, { action: 'extract_chat_history' }, (res) => {
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError);
+            } else {
+              resolve(res);
+            }
+          });
+        });
+        if (response && response.success) {
+          results[model] = response.history;
+        } else {
+          results[model] = [];
+        }
+      } catch (err) {
+        console.warn(`Could not extract history for ${model}:`, err);
+        results[model] = [];
+      }
+    } else {
+      results[model] = [];
+    }
+  }
+  return results;
+}
 
 async function tileWindows(models, screenInfo) {
   try {

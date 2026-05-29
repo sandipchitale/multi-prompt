@@ -136,6 +136,9 @@
       } else if (request.action === 'new_chat') {
         config.newChat();
         sendResponse({ success: true });
+      } else if (request.action === 'extract_chat_history') {
+        const history = typeof config.extractHistory === 'function' ? config.extractHistory() : [];
+        sendResponse({ success: true, history: history });
       }
     });
 
@@ -179,5 +182,99 @@
     document.addEventListener('click', handleSendActivation, true);
   }
 
-  globalThis.MultiPrompt = { init: init };
+  function nodeToMarkdown(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.nodeValue;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return '';
+    }
+
+    const tagName = node.tagName;
+
+    // Skip hidden elements, utility elements, copy buttons, buttons, svgs, etc.
+    if (tagName === 'BUTTON' || tagName === 'SVG' || node.classList.contains('sr-only') || node.getAttribute('aria-hidden') === 'true') {
+      return '';
+    }
+
+    const children = Array.from(node.childNodes).map(nodeToMarkdown).join('');
+
+    switch (tagName) {
+      case 'P':
+        return '\n\n' + children.trim() + '\n\n';
+      case 'STRONG':
+      case 'B':
+        return '**' + children + '**';
+      case 'EM':
+      case 'I':
+        return '*' + children + '*';
+      case 'CODE':
+        if (node.parentNode && node.parentNode.tagName === 'PRE') {
+          return children;
+        }
+        return '`' + children + '`';
+      case 'PRE':
+        const codeText = node.textContent || '';
+        const codeClass = node.querySelector('code')?.className || '';
+        const langMatch = codeClass.match(/language-(\w+)/);
+        const lang = langMatch ? langMatch[1] : '';
+        return '\n\n```' + lang + '\n' + codeText.replace(/^\s+|\s+$/g, '') + '\n```\n\n';
+      case 'H1': return '\n\n# ' + children.trim() + '\n\n';
+      case 'H2': return '\n\n## ' + children.trim() + '\n\n';
+      case 'H3': return '\n\n### ' + children.trim() + '\n\n';
+      case 'H4': return '\n\n#### ' + children.trim() + '\n\n';
+      case 'H5': return '\n\n##### ' + children.trim() + '\n\n';
+      case 'H6': return '\n\n###### ' + children.trim() + '\n\n';
+      case 'UL':
+      case 'OL':
+        return '\n' + children + '\n';
+      case 'LI':
+        return '* ' + children.trim() + '\n';
+      case 'BR':
+        return '\n';
+      case 'A':
+        const href = node.getAttribute('href') || '';
+        return `[${children}](${href})`;
+      case 'BLOCKQUOTE':
+        return '\n\n> ' + children.trim().replace(/\n/g, '\n> ') + '\n\n';
+      case 'TABLE':
+        return '\n\n' + formatTable(node) + '\n\n';
+      default:
+        return children;
+    }
+  }
+
+  function formatTable(tableEl) {
+    let markdown = '';
+    const rows = Array.from(tableEl.querySelectorAll('tr'));
+    rows.forEach((row, rowIndex) => {
+      const cells = Array.from(row.querySelectorAll('th, td'));
+      const cellTexts = cells.map(cell => cell.textContent.trim().replace(/\|/g, '\\|'));
+      markdown += '| ' + cellTexts.join(' | ') + ' |\n';
+      if (rowIndex === 0) {
+        markdown += '| ' + cellTexts.map(() => '---').join(' | ') + ' |\n';
+      }
+    });
+    return markdown;
+  }
+
+  function filterNestedElements(elements) {
+    const arr = Array.from(elements);
+    return arr.filter(el => {
+      let parent = el.parentElement;
+      while (parent) {
+        if (arr.includes(parent)) {
+          return false;
+        }
+        parent = parent.parentElement;
+      }
+      return true;
+    });
+  }
+
+  globalThis.MultiPrompt = {
+    init: init,
+    nodeToMarkdown: (node) => nodeToMarkdown(node).replace(/\n{3,}/g, '\n\n'),
+    filterNested: filterNestedElements
+  };
 })();
