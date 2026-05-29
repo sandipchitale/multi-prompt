@@ -84,6 +84,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+let lastBroadcastPrompt = '';
+let lastBroadcastTime = 0;
+
+function broadcastPrompt(prompt, source) {
+  const now = Date.now();
+  if (prompt === lastBroadcastPrompt && (now - lastBroadcastTime) < 500) {
+    return;
+  }
+  lastBroadcastPrompt = prompt;
+  lastBroadcastTime = now;
+
+  chrome.runtime.sendMessage({
+    action: 'broadcast_prompt',
+    prompt: prompt,
+    source: source
+  }, () => {
+    const err = chrome.runtime.lastError;
+  });
+}
+
 // Intercept user-initiated submissions and broadcast to background
 document.addEventListener('keydown', (e) => {
   if (isProgrammaticInput) return;
@@ -93,13 +113,7 @@ document.addEventListener('keydown', (e) => {
     if (inputField) {
       const prompt = inputField.innerText.trim();
       if (prompt) {
-        chrome.runtime.sendMessage({
-          action: 'broadcast_prompt',
-          prompt: prompt,
-          source: 'claude'
-        }, () => {
-          const err = chrome.runtime.lastError;
-        });
+        broadcastPrompt(prompt, 'claude');
       }
     }
   }
@@ -114,13 +128,22 @@ document.addEventListener('mousedown', (e) => {
     if (inputField) {
       const prompt = inputField.innerText.trim();
       if (prompt) {
-        chrome.runtime.sendMessage({
-          action: 'broadcast_prompt',
-          prompt: prompt,
-          source: 'claude'
-        }, () => {
-          const err = chrome.runtime.lastError;
-        });
+        broadcastPrompt(prompt, 'claude');
+      }
+    }
+  }
+}, true);
+
+document.addEventListener('click', (e) => {
+  if (isProgrammaticInput) return;
+  
+  const sendBtn = e.target.closest('button[aria-label*="Send"], button[data-testid="send-button"], button:has(svg)');
+  if (sendBtn) {
+    const inputField = document.querySelector('.ProseMirror, [contenteditable="true"]');
+    if (inputField) {
+      const prompt = inputField.innerText.trim();
+      if (prompt) {
+        broadcastPrompt(prompt, 'claude');
       }
     }
   }

@@ -4,12 +4,32 @@ const AI_URLS = {
   chatgpt: "https://chatgpt.com/"
 };
 
-// Set of active window IDs created/managed by the extension
-const extensionWindowIds = new Set();
+// Helper functions for session storage of managed windows
+async function getManagedWindowIds() {
+  const result = await chrome.storage.session.get(['managedWindowIds']);
+  return new Set(result.managedWindowIds || []);
+}
+
+async function addManagedWindowId(windowId) {
+  const ids = await getManagedWindowIds();
+  ids.add(windowId);
+  await chrome.storage.session.set({ managedWindowIds: Array.from(ids) });
+}
+
+async function removeManagedWindowId(windowId) {
+  const ids = await getManagedWindowIds();
+  ids.delete(windowId);
+  await chrome.storage.session.set({ managedWindowIds: Array.from(ids) });
+}
+
+async function hasManagedWindowId(windowId) {
+  const ids = await getManagedWindowIds();
+  return ids.has(windowId);
+}
 
 // Clean up closed windows
-chrome.windows.onRemoved.addListener((windowId) => {
-  extensionWindowIds.delete(windowId);
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  await removeManagedWindowId(windowId);
 });
 
 // Map of tabId -> prompt string to handle lazy injections
@@ -66,7 +86,7 @@ async function tileWindows(models, screenInfo) {
             height: height,
             focused: true
           });
-          extensionWindowIds.add(existingTab.windowId);
+          await addManagedWindowId(existingTab.windowId);
         } else {
           // Tab is in a window with other tabs. Extract it to its own window at the tiled coordinates.
           const newWin = await chrome.windows.create({
@@ -78,7 +98,7 @@ async function tileWindows(models, screenInfo) {
             focused: true,
             type: "normal"
           });
-          extensionWindowIds.add(newWin.id);
+          await addManagedWindowId(newWin.id);
         }
       } else {
         // Tab does not exist at all. Create a new window for it.
@@ -91,7 +111,7 @@ async function tileWindows(models, screenInfo) {
           focused: true,
           type: "normal"
         });
-        extensionWindowIds.add(newWin.id);
+        await addManagedWindowId(newWin.id);
       }
     }
   } catch (err) {
@@ -242,9 +262,12 @@ async function swapTabs(model1, model2) {
 
 async function handleBroadcast(prompt, source, sender) {
   try {
+    const senderWindowId = sender.tab ? sender.tab.windowId : 'undefined';
+    const managedIds = await getManagedWindowIds();
+    
     // Only broadcast if the source window is one of our tiled windows
-    if (!sender.tab || !extensionWindowIds.has(sender.tab.windowId)) {
-      console.log(`Blocked broadcast: source window ${sender.tab ? sender.tab.windowId : 'undefined'} is not extension-managed.`);
+    if (!sender.tab || !managedIds.has(sender.tab.windowId)) {
+      console.warn(`Blocked broadcast: source window ${senderWindowId} is not extension-managed.`);
       return;
     }
 
@@ -261,19 +284,20 @@ async function handleBroadcast(prompt, source, sender) {
         const urlBase = AI_URLS[model].split('/')[2];
         const tab = allTabs.find(t => t.url && t.url.includes(urlBase));
         
-        // Only inject if the target tab is in our extensionWindowIds set
-        if (tab && extensionWindowIds.has(tab.windowId)) {
-          // Send prompt to this tab!
-          chrome.tabs.sendMessage(tab.id, {
-            action: 'inject_prompt',
-            prompt: prompt
-          }, (response) => {
-             if (chrome.runtime.lastError) {
-                console.warn(`Could not deliver broadcast to ${model}:`, chrome.runtime.lastError);
-             } else {
-                console.log(`Delivered broadcast to ${model}`);
-             }
-          });
+        if (tab) {
+          const isManaged = managedIds.has(tab.windowId);
+          
+          // Only inject if the target tab is in our extensionWindowIds set
+          if (isManaged) {
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'inject_prompt',
+              prompt: prompt
+            }, (response) => {
+               if (chrome.runtime.lastError) {
+                  console.warn(`Could not deliver broadcast to ${model}:`, chrome.runtime.lastError);
+               }
+            });
+          }
         }
       }
     });
