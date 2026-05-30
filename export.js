@@ -50,44 +50,55 @@ document.addEventListener('DOMContentLoaded', () => {
       chatgpt: { name: 'ChatGPT', avatar: 'GPT', class: 'chatgpt', avatarClass: 'chatgpt-avatar' }
     };
 
-    // Render each model's history
-    Object.entries(history).forEach(([model, messages]) => {
-      if (!messages || messages.length === 0) return;
+    // Render interleaved prompts and responses
+    const alignedTurns = alignHistory(history);
 
-      const meta = modelMeta[model] || { name: model, avatar: 'AI', class: model, avatarClass: '' };
-      
-      const section = document.createElement('section');
-      section.className = `chatbot-section ${meta.class}`;
+    alignedTurns.forEach(turn => {
+      // Create a .prompt-group container
+      const groupEl = document.createElement('div');
+      groupEl.className = 'prompt-group';
 
-      section.innerHTML = `
-        <div class="chatbot-header">
-          <div class="chatbot-avatar ${meta.avatarClass}">${meta.avatar}</div>
-          <div class="chatbot-name">${meta.name}</div>
-        </div>
-        <div class="messages-container"></div>
-      `;
+      // 1. User Prompt Card (Only display if it's not empty, or display a styled empty block if greeting)
+      if (turn.prompt || Object.keys(turn.responses).length > 0) {
+        if (turn.prompt) {
+          const promptEl = document.createElement('div');
+          promptEl.className = 'user-prompt-card';
+          const parsedPrompt = parseMarkdownToHtml(turn.prompt);
+          promptEl.innerHTML = `
+            <div class="message-role">You</div>
+            <div class="message-content">${parsedPrompt}</div>
+          `;
+          groupEl.appendChild(promptEl);
+        }
 
-      const container = section.querySelector('.messages-container');
+        // 2. Responses Container
+        const responsesContainer = document.createElement('div');
+        responsesContainer.className = 'responses-container';
 
-      messages.forEach(msg => {
-        const isUser = msg.role === 'user';
-        const msgEl = document.createElement('div');
-        msgEl.className = `message ${isUser ? 'user' : 'assistant'}`;
+        // For each model in our history, if there is a response, render it
+        Object.entries(turn.responses).forEach(([model, responseText]) => {
+          if (!responseText) return;
+          
+          const meta = modelMeta[model] || { name: model, avatar: 'AI', class: model, avatarClass: '' };
+          
+          const cardEl = document.createElement('div');
+          cardEl.className = `response-card ${meta.class}`;
+          
+          const htmlContent = parseMarkdownToHtml(responseText);
+          
+          cardEl.innerHTML = `
+            <div class="response-header">
+              <div class="chatbot-avatar ${meta.avatarClass}">${meta.avatar}</div>
+              <div class="chatbot-name">${meta.name}</div>
+            </div>
+            <div class="response-content">${htmlContent}</div>
+          `;
+          responsesContainer.appendChild(cardEl);
+        });
 
-        const roleName = isUser ? 'You' : meta.name;
-        
-        // Basic Markdown to HTML converter for simple rendering
-        const rawContent = msg.text;
-        const htmlContent = parseMarkdownToHtml(rawContent);
-
-        msgEl.innerHTML = `
-          <div class="message-role">${roleName}</div>
-          <div class="message-content">${htmlContent}</div>
-        `;
-        container.appendChild(msgEl);
-      });
-
-      contentEl.appendChild(section);
+        groupEl.appendChild(responsesContainer);
+        contentEl.appendChild(groupEl);
+      }
     });
 
     if (contentEl.children.length === 0) {
@@ -161,4 +172,113 @@ function parseMarkdownToHtml(md) {
   html = html.replace(/<p>\s*<\/p>/g, '');
 
   return html;
+}
+
+// Group a single model's history into turns: { prompt, response }
+function getChatbotTurns(messages) {
+  const turns = [];
+  let currentTurn = null;
+
+  messages.forEach(msg => {
+    const msgText = (msg.text || '').trim();
+    if (msg.role === 'user') {
+      if (currentTurn && currentTurn.response) {
+        turns.push(currentTurn);
+        currentTurn = null;
+      }
+      if (!currentTurn) {
+        currentTurn = { prompt: msgText, response: '' };
+      } else {
+        currentTurn.prompt += '\n\n' + msgText;
+      }
+    } else if (msg.role === 'assistant') {
+      if (!currentTurn) {
+        currentTurn = { prompt: '', response: msgText };
+      } else {
+        if (!currentTurn.response) {
+          currentTurn.response = msgText;
+        } else {
+          currentTurn.response += '\n\n' + msgText;
+        }
+      }
+    }
+  });
+  if (currentTurn) {
+    currentTurn.prompt = currentTurn.prompt.trim();
+    currentTurn.response = currentTurn.response.trim();
+    turns.push(currentTurn);
+  }
+  return turns;
+}
+
+// Compare prompt texts ignoring whitespace and case
+function promptsMatch(p1, p2) {
+  if (!p1 && !p2) return true;
+  if (!p1 || !p2) return false;
+
+  const clean = (text) => {
+    return text.trim().toLowerCase().replace(/\s+/g, ' ');
+  };
+
+  const c1 = clean(p1);
+  const c2 = clean(p2);
+
+  if (c1 === c2) return true;
+
+  if (c1.length > 20 && c2.length > 20) {
+    if (c1.startsWith(c2) || c2.startsWith(c1)) return true;
+  }
+
+  return false;
+}
+
+// Align history across all chatbots
+function alignHistory(history) {
+  const modelTurns = {};
+  Object.keys(history).forEach(model => {
+    modelTurns[model] = getChatbotTurns(history[model]);
+  });
+
+  const alignedTurns = [];
+
+  const findMatchingAlignedTurn = (prompt) => {
+    return alignedTurns.find(item => promptsMatch(item.prompt, prompt));
+  };
+
+  Object.keys(modelTurns).forEach(model => {
+    modelTurns[model].forEach((turn, idx) => {
+      let matched = findMatchingAlignedTurn(turn.prompt);
+      if (!matched) {
+        matched = {
+          prompt: turn.prompt,
+          responses: {},
+          indices: []
+        };
+        alignedTurns.push(matched);
+      } else {
+        if (turn.prompt.length > matched.prompt.length) {
+          matched.prompt = turn.prompt;
+        }
+      }
+      matched.responses[model] = turn.response;
+      matched.indices.push(idx);
+    });
+  });
+
+  // Calculate average index for sorting
+  alignedTurns.forEach(turn => {
+    const sum = turn.indices.reduce((a, b) => a + b, 0);
+    turn.avgIndex = sum / turn.indices.length;
+  });
+
+  // Sort aligned turns chronologically by average index
+  alignedTurns.sort((a, b) => a.avgIndex - b.avgIndex);
+
+  // Clean up indices and avgIndex properties
+  alignedTurns.forEach(turn => {
+    delete turn.indices;
+    delete turn.avgIndex;
+  });
+
+  return alignedTurns;
 }

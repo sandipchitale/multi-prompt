@@ -282,20 +282,24 @@ document.addEventListener('DOMContentLoaded', () => {
       chatgpt: 'ChatGPT'
     };
 
-    Object.entries(history).forEach(([model, messages]) => {
-      if (!messages || messages.length === 0) return;
-      
-      const name = modelNames[model] || model;
-      md += `## 🤖 ${name} Chat\n\n`;
-      
-      messages.forEach(msg => {
-        const roleName = msg.role === 'user' ? 'User' : name;
-        md += `**${roleName}**:\n${msg.text}\n\n`;
-      });
-      
-      md += `---\n\n`;
+    const alignedTurns = alignHistory(history);
+
+    alignedTurns.forEach(turn => {
+      if (turn.prompt || Object.keys(turn.responses).length > 0) {
+        if (turn.prompt) {
+          md += `## 👤 Prompt\n${turn.prompt}\n\n`;
+        }
+
+        Object.entries(turn.responses).forEach(([model, responseText]) => {
+          if (!responseText) return;
+          const name = modelNames[model] || model;
+          md += `### 🤖 ${name}\n${responseText}\n\n`;
+        });
+
+        md += `---\n\n`;
+      }
     });
-    
+
     return md;
   }
 
@@ -339,3 +343,112 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initial state check
   updateState();
 });
+
+// Group a single model's history into turns: { prompt, response }
+function getChatbotTurns(messages) {
+  const turns = [];
+  let currentTurn = null;
+
+  messages.forEach(msg => {
+    const msgText = (msg.text || '').trim();
+    if (msg.role === 'user') {
+      if (currentTurn && currentTurn.response) {
+        turns.push(currentTurn);
+        currentTurn = null;
+      }
+      if (!currentTurn) {
+        currentTurn = { prompt: msgText, response: '' };
+      } else {
+        currentTurn.prompt += '\n\n' + msgText;
+      }
+    } else if (msg.role === 'assistant') {
+      if (!currentTurn) {
+        currentTurn = { prompt: '', response: msgText };
+      } else {
+        if (!currentTurn.response) {
+          currentTurn.response = msgText;
+        } else {
+          currentTurn.response += '\n\n' + msgText;
+        }
+      }
+    }
+  });
+  if (currentTurn) {
+    currentTurn.prompt = currentTurn.prompt.trim();
+    currentTurn.response = currentTurn.response.trim();
+    turns.push(currentTurn);
+  }
+  return turns;
+}
+
+// Compare prompt texts ignoring whitespace and case
+function promptsMatch(p1, p2) {
+  if (!p1 && !p2) return true;
+  if (!p1 || !p2) return false;
+
+  const clean = (text) => {
+    return text.trim().toLowerCase().replace(/\s+/g, ' ');
+  };
+
+  const c1 = clean(p1);
+  const c2 = clean(p2);
+
+  if (c1 === c2) return true;
+
+  if (c1.length > 20 && c2.length > 20) {
+    if (c1.startsWith(c2) || c2.startsWith(c1)) return true;
+  }
+
+  return false;
+}
+
+// Align history across all chatbots
+function alignHistory(history) {
+  const modelTurns = {};
+  Object.keys(history).forEach(model => {
+    modelTurns[model] = getChatbotTurns(history[model]);
+  });
+
+  const alignedTurns = [];
+
+  const findMatchingAlignedTurn = (prompt) => {
+    return alignedTurns.find(item => promptsMatch(item.prompt, prompt));
+  };
+
+  Object.keys(modelTurns).forEach(model => {
+    modelTurns[model].forEach((turn, idx) => {
+      let matched = findMatchingAlignedTurn(turn.prompt);
+      if (!matched) {
+        matched = {
+          prompt: turn.prompt,
+          responses: {},
+          indices: []
+        };
+        alignedTurns.push(matched);
+      } else {
+        if (turn.prompt.length > matched.prompt.length) {
+          matched.prompt = turn.prompt;
+        }
+      }
+      matched.responses[model] = turn.response;
+      matched.indices.push(idx);
+    });
+  });
+
+  // Calculate average index for sorting
+  alignedTurns.forEach(turn => {
+    const sum = turn.indices.reduce((a, b) => a + b, 0);
+    turn.avgIndex = sum / turn.indices.length;
+  });
+
+  // Sort aligned turns chronologically by average index
+  alignedTurns.sort((a, b) => a.avgIndex - b.avgIndex);
+
+  // Clean up indices and avgIndex properties
+  alignedTurns.forEach(turn => {
+    delete turn.indices;
+    delete turn.avgIndex;
+  });
+
+  return alignedTurns;
+}
