@@ -11,6 +11,7 @@ Instead of typing prompts inside an extension panel, you type and submit a promp
 - **Smart "Tile Windows":** Click "Tile Windows" in the popup to position and size the selected chatbots side-by-side across your screen. Existing chatbot tabs are reused (and pulled into their own window if needed) rather than duplicated.
 - **Visual Tiling Order & Swapping:** Arrange the left-to-right window order directly from the popup. Swapping physically slides the windows on screen without page reloads or losing your chat state.
 - **Master "New Chat" Control:** Start fresh threads on all active models at once with a single click.
+- **Bookmark Session:** Bookmark your active chatbot session tabs into a timestamped subfolder under a `"Multi-prompt"` parent folder inside Chrome Bookmarks. Reloading these bookmarked conversations and clicking "Tile Windows" will tile them back perfectly.
 - **Selective Syncing:** Only prompts typed inside extension-managed tiled windows are synchronized. Chatbots you open yourself in normal tabs are ignored.
 - **Theme:** Auto / Light / Dark, following the system theme by default.
 
@@ -28,6 +29,7 @@ Because AI chatbots enforce strict security policies, this extension combines a 
 
 - `tabs`, `windows` — to find, position, resize, and swap the chatbot windows.
 - `storage` — to persist preferences (`local`) and the set of managed window IDs (`session`).
+- `bookmarks` — to create a folder hierarchy and save session links under the Bookmarks Bar.
 - `host_permissions` for `gemini.google.com`, `claude.ai`, and `chatgpt.com` — to run the content scripts on those sites only.
 
 ## Installation from Source 💻

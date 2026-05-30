@@ -47,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const exportBtn = document.getElementById('export-btn');
   const exportFormat = document.getElementById('export-format');
   const closeTilesBtn = document.getElementById('close-tiles-btn');
+  const bookmarkBtn = document.getElementById('bookmark-btn');
 
   // We maintain an ordered array of selected models: e.g. ['gemini', 'claude']
   let selectedModels = [];
@@ -156,6 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.session.get(['managedWindowIds'], (result) => {
       const hasTiles = result.managedWindowIds && result.managedWindowIds.length > 0;
       if (closeTilesBtn) closeTilesBtn.disabled = !hasTiles;
+      if (bookmarkBtn) bookmarkBtn.disabled = !hasTiles;
     });
 
     renderLayoutPreview();
@@ -325,6 +327,34 @@ document.addEventListener('DOMContentLoaded', () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }
+
+  // BOOKMARK SESSION BUTTON
+  if (bookmarkBtn) {
+    bookmarkBtn.addEventListener('click', () => {
+      const textSpan = bookmarkBtn.querySelector('.btn-text');
+      const originalText = textSpan.textContent;
+      textSpan.textContent = "Bookmarking...";
+      bookmarkBtn.disabled = true;
+
+      chrome.runtime.sendMessage({ action: 'bookmark_session' }, (response) => {
+        const err = chrome.runtime.lastError;
+        
+        if (err || !response || response.status === 'error') {
+          console.error("Bookmarking failed:", err || response?.error);
+          alert("Bookmarking failed. Make sure your tiled chatbot windows are open.");
+          textSpan.textContent = originalText;
+          updateState();
+          return;
+        }
+
+        textSpan.textContent = "Bookmarked!";
+        setTimeout(() => {
+          textSpan.textContent = originalText;
+          updateState();
+        }, 1500);
+      });
+    });
   }
 
   // CLOSE TILES BUTTON

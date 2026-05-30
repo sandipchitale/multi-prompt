@@ -16,6 +16,38 @@ function tabMatchesModel(tab, model) {
   }
 }
 
+// Score a tab for a specific chatbot model to find the best match.
+// Prioritizes active tabs and specific chat paths over base/homepage URLs.
+function getTabScore(tab, model) {
+  if (!tab.url) return 0;
+  try {
+    const urlObj = new URL(tab.url);
+    if (urlObj.hostname !== new URL(AI_URLS[model]).hostname) return 0;
+
+    let score = 1; // Base match
+
+    if (tab.active) score += 2;
+
+    const path = urlObj.pathname;
+    if (model === 'gemini') {
+      if (path.includes('/chat/')) {
+        score += 5;
+      }
+    } else if (model === 'claude') {
+      if (path.startsWith('/chat/')) {
+        score += 5;
+      }
+    } else if (model === 'chatgpt') {
+      if (path.startsWith('/c/') || path.startsWith('/g/')) {
+        score += 5;
+      }
+    }
+    return score;
+  } catch (e) {
+    return 0;
+  }
+}
+
 // Helper functions for session storage of managed windows
 async function getManagedWindowIds() {
   const result = await chrome.storage.session.get(['managedWindowIds']);
@@ -71,6 +103,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ status: 'error', error: err.message || String(err) });
     });
     return true;
+  } else if (request.action === 'bookmark_session') {
+    handleBookmarkSession().then(result => {
+      sendResponse(result);
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true; // Keep message channel open for async response
   }
 });
 
@@ -133,7 +172,17 @@ async function tileWindows(models, screenInfo) {
 
     for (let i = 0; i < N; i++) {
       const model = models[i];
-      const existingTab = allTabs.find(t => tabMatchesModel(t, model));
+      
+      // Find the best matching existing tab for this model using tab scoring
+      let existingTab = null;
+      let highestScore = 0;
+      for (const tab of allTabs) {
+        const score = getTabScore(tab, model);
+        if (score > highestScore) {
+          highestScore = score;
+          existingTab = tab;
+        }
+      }
 
       const left = availLeft + (i * baseWidth);
       const top = availTop;
@@ -301,4 +350,96 @@ async function handleBroadcast(prompt, source, sender) {
   } catch (err) {
     console.error("Broadcast failed:", err);
   }
+}
+
+// Find all session tabs, create bookmark folder hierarchy and save them
+async function handleBookmarkSession() {
+  const managedWindowIds = await getManagedWindowIds();
+  if (managedWindowIds.size === 0) {
+    throw new Error("No active session in progress.");
+  }
+
+  const allTabs = await chrome.tabs.query({});
+  const sessionTabs = [];
+  const models = Object.keys(AI_URLS);
+
+  for (const tab of allTabs) {
+    if (managedWindowIds.has(tab.windowId)) {
+      const matchedModel = models.find(m => tabMatchesModel(tab, m));
+      if (matchedModel) {
+        sessionTabs.push({
+          url: tab.url,
+          title: tab.title || (matchedModel.charAt(0).toUpperCase() + matchedModel.slice(1)),
+          model: matchedModel
+        });
+      }
+    }
+  }
+
+  if (sessionTabs.length === 0) {
+    throw new Error("No chatbot tabs found in the active session.");
+  }
+
+  // 1. Search for existing "Multi-prompt" folder in bookmarks
+  const searchResults = await new Promise((resolve) => {
+    chrome.bookmarks.search({ title: "Multi-prompt" }, resolve);
+  });
+
+  let parentFolder = searchResults.find(r => !r.url);
+  if (!parentFolder) {
+    // Create it under the Bookmarks Bar ("1")
+    parentFolder = await new Promise((resolve, reject) => {
+      chrome.bookmarks.create({ parentId: "1", title: "Multi-prompt" }, (newFolder) => {
+        if (chrome.runtime.lastError) {
+          // Fallback: create without parentId (usually defaults to Other Bookmarks)
+          chrome.bookmarks.create({ title: "Multi-prompt" }, (fallbackFolder) => {
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError);
+            } else {
+              resolve(fallbackFolder);
+            }
+          });
+        } else {
+          resolve(newFolder);
+        }
+      });
+    });
+  }
+
+  // 2. Create the timestamp subfolder (e.g. "Session - 2026-05-30 13:35:31")
+  const pad = (num) => String(num).padStart(2, '0');
+  const now = new Date();
+  const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${now.getHours()}:${pad(now.getMinutes())}:${now.getSeconds()}`;
+  
+  const sessionFolder = await new Promise((resolve, reject) => {
+    chrome.bookmarks.create({
+      parentId: parentFolder.id,
+      title: `Session - ${timestamp}`
+    }, (newFolder) => {
+      if (chrome.runtime.lastError) {
+        reject(chrome.runtime.lastError);
+      } else {
+        resolve(newFolder);
+      }
+    });
+  });
+
+  // 3. Create a bookmark for each chatbot tab in the subfolder
+  for (const tabInfo of sessionTabs) {
+    await new Promise((resolve, reject) => {
+      chrome.bookmarks.create({
+        parentId: sessionFolder.id,
+        title: tabInfo.title,
+        url: tabInfo.url
+      }, (newBookmark) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(newBookmark);
+        }
+      });
+    });
+  }
+
+  return { status: 'success', count: sessionTabs.length, folderTitle: sessionFolder.title };
 }

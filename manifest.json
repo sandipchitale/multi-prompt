@@ -6,7 +6,8 @@
   "permissions": [
     "tabs",
     "windows",
-    "storage"
+    "storage",
+    "bookmarks"
   ],
   "host_permissions": [
     "*://gemini.google.com/*",
