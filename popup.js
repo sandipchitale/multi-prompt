@@ -57,8 +57,8 @@ document.addEventListener('DOMContentLoaded', () => {
     chatgpt: { name: 'ChatGPT', color: '#10a37f' }
   };
 
-  // Load saved checkbox selections and order
-  chrome.storage.local.get(['selectedModels'], (result) => {
+  // Load saved checkbox selections, order, and export format preference
+  chrome.storage.local.get(['selectedModels', 'exportFormatPref'], (result) => {
     if (result.selectedModels && Array.isArray(result.selectedModels)) {
       selectedModels = result.selectedModels;
     } else {
@@ -70,6 +70,11 @@ document.addEventListener('DOMContentLoaded', () => {
     checkboxes.forEach(cb => {
       cb.checked = selectedModels.includes(cb.value);
     });
+
+    // Set saved export format preference
+    if (exportFormat && result.exportFormatPref) {
+      exportFormat.value = result.exportFormatPref;
+    }
     
     updateState();
   });
@@ -224,6 +229,13 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
   });
+
+  // Save export format preference
+  if (exportFormat) {
+    exportFormat.addEventListener('change', (e) => {
+      chrome.storage.local.set({ exportFormatPref: e.target.value });
+    });
+  }
 
   // EXPORT CHATS BUTTON
   if (exportBtn) {
