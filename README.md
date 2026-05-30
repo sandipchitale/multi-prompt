@@ -32,6 +32,8 @@ Because AI chatbots enforce strict security policies, this extension combines a 
 
 ## Installation from Source 💻
 
+### Chrome
+
 Since this is an unpacked developer extension, you can install it in a few seconds:
 
 1. **Download/Clone the Source:** Save this `multi-prompt` folder somewhere on your computer.
@@ -40,5 +42,9 @@ Since this is an unpacked developer extension, you can install it in a few secon
 4. **Load Unpacked:** Click **Load unpacked**.
 5. **Select the Folder:** Choose the `multi-prompt` folder (the directory containing `manifest.json`).
 6. **Pin It:** Click the puzzle-piece icon next to the address bar and pin "Multi-Prompt".
+
+### Safari
+
+Multi-prompt works on Safari as well. To install follow the instructions [here](https://developer.apple.com/documentation/safariservices/running-your-safari-web-extension#Temporarily-install-a-web-extension-folder-in-macOS-Safari).
 
 Enjoy supercharged multi-AI prompting!
