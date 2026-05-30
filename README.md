@@ -1,6 +1,6 @@
-# Multi-Prompt Chrome Extension 🚀
+# Multi-Prompt Chrome (and Safari) Extension 🚀
 
-The Multi-Prompt Chrome Extension is a productivity tool that tiles Gemini, Claude, and ChatGPT side-by-side on your screen and synchronizes your prompts across all of them.
+The Multi-Prompt extension is a productivity tool that tiles Gemini, Claude, and ChatGPT side-by-side on your screen and synchronizes your prompts across all of them.
 
 Instead of typing prompts inside an extension panel, you type and submit a prompt in **any** of the tiled chatbot windows, and the extension automatically broadcasts and submits that same prompt in all other active chatbot windows.
 
