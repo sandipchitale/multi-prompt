@@ -1,4 +1,4 @@
-# Multi-Prompt Chrome (and Safari) Extension 🚀
+# [Multi-Prompt](https://www.linkedin.com/pulse/multi-prompt-sandip-chitale-0ktrc) Chrome (and Safari) Extension 🚀
 
 The Multi-Prompt extension is a productivity tool that tiles Gemini, Claude, and ChatGPT side-by-side on your screen and synchronizes your prompts across all of them.
 
@@ -12,6 +12,8 @@ Instead of typing prompts inside an extension panel, you type and submit a promp
 - **Visual Tiling Order & Swapping:** Arrange the left-to-right window order directly from the popup. Swapping physically slides the windows on screen without page reloads or losing your chat state.
 - **Master "New Chat" Control:** Start fresh threads on all active models at once with a single click.
 - **Bookmark Session:** Bookmark your active chatbot session tabs into a timestamped subfolder under a `"Multi-prompt"` parent folder inside Chrome Bookmarks. Reloading these bookmarked conversations and clicking "Tile Windows" will tile them back perfectly.
+- **Export Chat History:** Export conversation history from all active chatbots into Markdown (`.md`) or save to PDF / print via a clean export template.
+- **Close Tiles:** Close all active, extension-managed tiled windows instantly with a single button click.
 - **Selective Syncing:** Only prompts typed inside extension-managed tiled windows are synchronized. Chatbots you open yourself in normal tabs are ignored.
 - **Theme:** Auto / Light / Dark, following the system theme by default.
 
