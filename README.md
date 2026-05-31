@@ -52,3 +52,103 @@ Since this is an unpacked developer extension, you can install it in a few secon
 Multi-prompt works on Safari as well. To install follow the instructions [here](https://developer.apple.com/documentation/safariservices/running-your-safari-web-extension#Temporarily-install-a-web-extension-folder-in-macOS-Safari).
 
 Enjoy supercharged multi-AI prompting!
+
+## One-Shot Prompt (Generate from Scratch) 🤖
+
+If you want to generate this exact implementation from scratch using a modern AI model, you can use the following comprehensive prompt:
+
+```text
+Write a fully-functional, polished Manifest V3 Chrome Extension called "Multi-Prompt Split View" that tiles Gemini, Claude, and ChatGPT side-by-side and synchronizes prompts across all of them in real-time. The code must implement modern styling (glassmorphism/sleek dark/light theme support) and robust event orchestration.
+
+Create the extension using the following file structure:
+- manifest.json
+- background.js
+- popup.html
+- popup.css
+- popup.js
+- content/common.js
+- content/gemini.js
+- content/claude.js
+- content/chatgpt.js
+- export.html
+- export.js
+
+Here are the specifications for each file:
+
+### 1. manifest.json
+- Manifest version: 3
+- Permissions: "tabs", "windows", "storage", "bookmarks"
+- Host permissions: `*://gemini.google.com/*`, `*://claude.ai/*`, `*://chatgpt.com/*`
+- Action default popup: popup.html
+- Background service worker: background.js
+- Content scripts configuration:
+  - Match `*://gemini.google.com/app*` using content/common.js and content/gemini.js
+  - Match `*://claude.ai/*` using content/common.js and content/claude.js
+  - Match `*://chatgpt.com/*` using content/common.js and content/chatgpt.js
+  - Run at `document_idle`
+
+### 2. background.js
+- Maintain chatbot base URLs: Gemini (`https://gemini.google.com/app`), Claude (`https://claude.ai/new`), ChatGPT (`https://chatgpt.com/`).
+- Tab-to-Model matching: Compare tab URLs hostnames. To score matching tabs, prioritize active tabs and specific chat paths over homepages.
+- Manage "managed window IDs" in `chrome.storage.session`. Remove window IDs from storage when the window is closed (`chrome.windows.onRemoved`).
+- Message listeners:
+  - `launch_tabs`: Tile selected chatbots horizontally across the available screen area. If an existing tab for a model is open, reuse it (if it's the only tab in a window, resize/move that window; otherwise extract it to a new window). If none exists, create a new window.
+  - `new_chat`: Send a message to active chatbot tabs to trigger a fresh conversation.
+  - `swap_tabs`: Swap positions of two tiled windows by swapping their window dimensions/coordinates. If they are in the same window (e.g. tabs), swap their URLs instead.
+  - `broadcast_prompt`: Intercept a prompt from a managed tab and send it to all other managed active tabs, avoiding echoes.
+  - `export_chats`: Query chat history from content scripts of all active models in the managed session and return it.
+  - `close_tiles`: Close all extension-managed tiled windows and clear the storage.
+  - `bookmark_session`: Find all chatbot tabs in the session, search/create a "Multi-prompt" bookmarks folder under Bookmarks Bar, create a timestamped subfolder, and bookmark each active chatbot URL.
+
+### 3. popup.html
+- Clean container of fixed width (380px).
+- Premium header with a stylized "M" logo gradient and Title "Multi-Prompt".
+- A Theme Toggle (Auto, Light, Dark) using radio inputs.
+- Checklist card container for Gemini, Claude, and ChatGPT with toggle indicators.
+- A dynamically filled Layout Preview section showing selected models in left-to-right order with interactive swap buttons (bidirectional arrows) between chips. Clicking a swap button updates storage and messages the background script to swap window coordinates.
+- Export Chat History section: dropdown choice between "Markdown (.md)" or "PDF / Print (.pdf)" and an Export button.
+- Bottom actions: Row 1 containing "New Chat" and "Bookmark" buttons; Row 2 containing "Tile Windows" and "Close Tiles" buttons.
+- State-driven styling: show/hide error messages if no models are checked. Disable actions appropriately.
+
+### 4. popup.css
+- Custom fonts (e.g., Inter) and responsive CSS custom properties (colors, borders, gradients).
+- Theme styling: Light and Dark modes. Dark uses deep black/navy background `#0f111a` and panel background `#161925`. Light uses off-white `#f7f9fa` and white panels.
+- Custom styled checkboxes masqueraded as premium cards with subtle transitions, card borders highlighting upon checkbox activation, and neon colored avatars (Gemini: blue gradient, Claude: orange, ChatGPT: emerald).
+- Tiling order preview chips with rounded edges and transition effects on the swap arrows.
+- Elegant button states (hover, active, disabled) using smooth color transitions.
+
+### 5. popup.js
+- Listen to DOMContentLoaded. Read and apply stored theme (Auto/Light/Dark), checklist checkboxes, and export format choices from storage.
+- Synchronize theme settings with OS system theme when set to 'auto'.
+- Dynamically build and render the Layout Preview chips with swap controls. Clicking a swap control swaps indices in the list, saves to storage, and posts a message to trigger window physical swapping.
+- Set disabled states for action buttons (Bookmark, Close Tiles, Export) dynamically based on background session state.
+- Handle Markdown/PDF export action: request histories from background worker, align chatbot turns chronologically using matching heuristics (comparing user prompts with tolerance for minor spacing/casing mismatches), and output format (either save markdown string as a file download, or save history to local storage and open export.html).
+
+### 6. content/common.js
+- Encapsulate prompt broadcast, content injection, echo prevention, and history extraction in a global `MultiPrompt` object.
+- Maintain programmatic flags (`isProgrammaticInput = false`) and de-duplication buffers to avoid loop-back echoes or double broadcasts.
+- Value setters: Set editor text (Textarea, Input, or ContentEditable) safely using descriptors, append content/events safely, dispatch React/framework-aware events ('input' and 'change').
+- Message listener:
+  - `inject_prompt`: Call editor setting logic, nudge the editor model using `document.execCommand('insertText')`, wait briefly, then click the send button (or dispatch Enter).
+  - `new_chat`: Execute site-specific newChat logic.
+  - `extract_chat_history`: Execute site-specific DOM parsing and map HTML elements to markdown elements (P, strong, code blocks, blockquotes, lists, tables).
+- Keydown listener on `document`: Intercept Enter keypresses on target editors (ignoring Shift/IME/programmatic values), prevent default behaviors, broadcast text, and submit.
+- Click/Mousedown listener: Detect clicks on send buttons, extract content, and broadcast.
+
+### 7. content/gemini.js, claude.js, chatgpt.js
+- Invoke `MultiPrompt.init({...})` passing site selectors and callbacks.
+- Selectors:
+  - Gemini: input selector `rich-textarea div[contenteditable="true"], .ProseMirror`, send selector `button[aria-label*="Send message"], .send-button`. New chat clicks the "New Chat" link/button or redirects to homepage.
+  - Claude: input selector `.ProseMirror, div[contenteditable="true"]`, send selector `button[aria-label*="Send"], button[data-testid="send-button"]`. New chat clicks `/new` link or redirects.
+  - ChatGPT: input selector `#prompt-textarea, div[contenteditable="true"]`, send selector `button[data-testid="send-button"]`. New chat clicks new-chat buttons or redirects.
+- Extraction rules: Iterate user prompts and assistant message containers, strip screen-reader prefixes (like "You said"), parse formatting, and compile history turns.
+
+### 8. export.html & export.js
+- Standalone HTML page with styling for printing/saving to PDF.
+- Theme support matching current user preference.
+- Retrieve exported history from storage, group turns chronologically, and render user prompt blocks stacked with response cards colored by brand.
+- Render markdown elements into standard HTML using a simple custom markdown regex parser.
+- Auto-trigger print view (`window.print()`) after loading.
+
+Provide code implementations that are robust, error-tolerant, and handle corner cases gracefully. Avoid using placeholders or simplified loops.
+```
