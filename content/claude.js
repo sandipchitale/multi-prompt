@@ -5,6 +5,8 @@ MultiPrompt.init({
   // Claude uses a ProseMirror contenteditable for its composer.
   inputSelector: '.ProseMirror, div[contenteditable="true"]',
   sendSelector: 'button[aria-label*="Send"], button[data-testid="send-button"]',
+  // The rendered user-message bubble we stamp with the shared turn id.
+  userTurnSelector: '[data-testid="user-message"], .font-user-message',
   newChat() {
     let newChatBtn = document.querySelector('a[href="/new"]') ||
                      document.querySelector('button[aria-label*="New Chat"]') ||
@@ -40,7 +42,9 @@ MultiPrompt.init({
       if (isUser) {
         const text = el.innerText.trim();
         if (text) {
-          history.push({ role: 'user', text: text });
+          const turnId = el.getAttribute('data-mp-turn') ||
+                         el.closest('[data-mp-turn]')?.getAttribute('data-mp-turn') || null;
+          history.push({ role: 'user', text: text, turnId: turnId });
         }
       } else {
         const text = MultiPrompt.nodeToMarkdown(el).trim();

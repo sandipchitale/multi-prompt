@@ -5,6 +5,8 @@ MultiPrompt.init({
   // Gemini wraps its composer in a custom <rich-textarea> element.
   inputSelector: 'rich-textarea div[contenteditable="true"], .ProseMirror, div[contenteditable="true"]',
   sendSelector: 'button[aria-label*="Send message"], .send-button',
+  // The rendered user-query element we stamp with the shared turn id.
+  userTurnSelector: 'user-query',
   newChat() {
     let newChatBtn = null;
 
@@ -35,7 +37,9 @@ MultiPrompt.init({
           text = text.replace(/^You said\s*/i, "").trim();
         }
         if (text) {
-          history.push({ role: 'user', text: text });
+          const turnId = el.getAttribute('data-mp-turn') ||
+                         el.closest('[data-mp-turn]')?.getAttribute('data-mp-turn') || null;
+          history.push({ role: 'user', text: text, turnId: turnId });
         }
       } else {
         const text = MultiPrompt.nodeToMarkdown(el).trim();

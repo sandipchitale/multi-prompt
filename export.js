@@ -108,12 +108,8 @@ document.addEventListener('DOMContentLoaded', () => {
           <p>The chatbots do not have any message history in this session.</p>
         </div>
       `;
-    } else {
-      // Auto-trigger print after rendering
-      setTimeout(() => {
-        window.print();
-      }, 600);
     }
+    // The user invokes printing via the "Print / Save as PDF" button.
   });
 });
 
@@ -187,9 +183,10 @@ function getChatbotTurns(messages) {
         currentTurn = null;
       }
       if (!currentTurn) {
-        currentTurn = { prompt: msgText, response: '' };
+        currentTurn = { prompt: msgText, response: '', turnId: msg.turnId || null };
       } else {
         currentTurn.prompt += '\n\n' + msgText;
+        if (!currentTurn.turnId && msg.turnId) currentTurn.turnId = msg.turnId;
       }
     } else if (msg.role === 'assistant') {
       if (!currentTurn) {
@@ -232,7 +229,12 @@ function promptsMatch(p1, p2) {
   return false;
 }
 
-// Align history across all chatbots
+// Align history across all chatbots.
+//
+// Turns broadcast by the extension carry a shared turnId stamped onto every
+// model's rendered turn, so they are grouped exactly by that id — even when two
+// prompts are textually identical. Turns without an id (e.g. typed before
+// tiling, or where tagging failed) fall back to the fuzzy prompt-text match.
 function alignHistory(history) {
   const modelTurns = {};
   Object.keys(history).forEach(model => {
@@ -240,26 +242,36 @@ function alignHistory(history) {
   });
 
   const alignedTurns = [];
-
-  const findMatchingAlignedTurn = (prompt) => {
-    return alignedTurns.find(item => promptsMatch(item.prompt, prompt));
-  };
+  const byTurnId = new Map();
 
   Object.keys(modelTurns).forEach(model => {
     modelTurns[model].forEach((turn, idx) => {
-      let matched = findMatchingAlignedTurn(turn.prompt);
-      if (!matched) {
-        matched = {
-          prompt: turn.prompt,
-          responses: {},
-          indices: []
-        };
-        alignedTurns.push(matched);
+      let matched = null;
+      if (turn.turnId && byTurnId.has(turn.turnId)) {
+        matched = byTurnId.get(turn.turnId);
       } else {
-        if (turn.prompt.length > matched.prompt.length) {
-          matched.prompt = turn.prompt;
-        }
+        // Find the earliest bucket this model hasn't filled yet whose prompt
+        // matches and whose id is compatible. "Compatible" means at least one
+        // side is untagged, or both ids are equal — so an untagged turn (e.g. a
+        // model that lost its tag) still merges into a tagged group, while two
+        // DIFFERENT ids never merge (keeping identical prompts separate).
+        matched = alignedTurns.find(item =>
+          !(model in item.responses) &&
+          (item.turnId == null || turn.turnId == null || item.turnId === turn.turnId) &&
+          promptsMatch(item.prompt, turn.prompt)
+        );
       }
+
+      if (!matched) {
+        matched = { prompt: turn.prompt, responses: {}, turnId: null, indices: [] };
+        alignedTurns.push(matched);
+      }
+      if (turn.turnId && matched.turnId == null) {
+        matched.turnId = turn.turnId;
+        byTurnId.set(turn.turnId, matched);
+      }
+      if (turn.prompt.length > matched.prompt.length) matched.prompt = turn.prompt;
+
       matched.responses[model] = turn.response;
       matched.indices.push(idx);
     });
@@ -274,10 +286,11 @@ function alignHistory(history) {
   // Sort aligned turns chronologically by average index
   alignedTurns.sort((a, b) => a.avgIndex - b.avgIndex);
 
-  // Clean up indices and avgIndex properties
+  // Clean up bookkeeping properties
   alignedTurns.forEach(turn => {
     delete turn.indices;
     delete turn.avgIndex;
+    delete turn.turnId;
   });
 
   return alignedTurns;

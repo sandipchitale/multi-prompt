@@ -8,11 +8,12 @@ Instead of typing prompts inside an extension panel, you type and submit a promp
 
 - **Multi-Model Support:** Select any combination of Gemini, Claude, and ChatGPT (from 1 to all 3).
 - **Prompt Broadcasting:** Type your prompt natively in Claude, Gemini, or ChatGPT and it is replicated and submitted in the other tiled windows.
-- **Smart "Tile Windows":** Click "Tile Windows" in the popup to position and size the selected chatbots side-by-side across your screen. Existing chatbot tabs are reused (and pulled into their own window if needed) rather than duplicated.
+- **One-Button "New Chat":** A single button is all you need. If the selected chatbots aren't tiled yet, **New Chat** opens and tiles them side-by-side; if they're already open, it starts a fresh conversation in each. Either way it begins a brand new, automatically-saved session.
+- **Exact Cross-Model Alignment:** Each broadcast is stamped with a shared, hidden **turn id** (a `data-mp-turn` DOM attribute added _after_ the message is sent — never injected into the prompt text the model sees). Export uses these ids to group every model's answer to the same prompt exactly, even when two prompts are textually identical.
+- **Automatic Session Bookmarking:** Every session is auto-saved into a timestamped subfolder under a `"Multi-prompt"` parent folder in Chrome Bookmarks — no manual "bookmark" step. A small bookkeeping bookmark inside each folder stores the window order and the turn-id ledger (it uses the reserved `multi-prompt.invalid` host, so it can never navigate anywhere, and the extension skips it when reopening).
+- **Saved Sessions Picker:** Reopen any saved session from a compact dropdown in the popup. The extension re-tiles the saved conversations in order and **reattaches** the original turn ids, so exported alignment survives a reload. Delete a session (and its bookmark folder) from the same control.
 - **Visual Tiling Order & Swapping:** Arrange the left-to-right window order directly from the popup. Swapping physically slides the windows on screen without page reloads or losing your chat state.
-- **Master "New Chat" Control:** Start fresh threads on all active models at once with a single click.
-- **Bookmark Session:** Bookmark your active chatbot session tabs into a timestamped subfolder under a `"Multi-prompt"` parent folder inside Chrome Bookmarks. Reloading these bookmarked conversations and clicking "Tile Windows" will tile them back perfectly.
-- **Export Chat History:** Export conversation history from all active chatbots into Markdown (`.md`) or save to PDF / print via a clean export template.
+- **Export Chat History:** Export conversation history from all active chatbots into Markdown (`.md`) or a clean PDF / print template. The PDF view renders immediately and you invoke **Print / Save as PDF** when ready (no surprise print dialog).
 - **Close Tiles:** Close all active, extension-managed tiled windows instantly with a single button click.
 - **Selective Syncing:** Only prompts typed inside extension-managed tiled windows are synchronized. Chatbots you open yourself in normal tabs are ignored.
 - **Theme:** Auto / Light / Dark, following the system theme by default.
@@ -21,17 +22,19 @@ Instead of typing prompts inside an extension panel, you type and submit a promp
 
 Because AI chatbots enforce strict security policies, this extension combines a **Background Service Worker** with **Content Scripts**:
 
-1. The **Popup** (`popup.html` / `popup.js`) is the configuration dashboard for selecting active models, ordering them, and tiling them. Selections, order, and theme are persisted in `chrome.storage.local`.
-2. The **Service Worker** (`background.js`) tiles, swaps, and resets the chatbot windows, and tracks which windows it manages in `chrome.storage.session`.
-3. **Content Scripts** are injected into the chatbot pages. A shared module (`content/common.js`) holds all the cross-site logic, while the per-site files (`content/claude.js`, `content/chatgpt.js`, `content/gemini.js`) supply only that site's CSS selectors and "new chat" behaviour.
-4. When you submit a prompt in a managed window, its content script forwards the text to the service worker, which verifies the source window is managed and forwards the prompt to the other selected models.
-5. Target content scripts insert the text (using safe, framework-aware insertion — never `innerHTML`) and trigger the site's submit handler.
+1. The **Popup** (`popup.html` / `popup.js`) is the dashboard for selecting active models, ordering them, exporting, and reopening saved sessions. Selections, order, and theme are persisted in `chrome.storage.local`.
+2. The **Service Worker** (`background.js`) is the coordinator. It tiles/swaps/resets windows, tracks the managed windows and the **active session** in `chrome.storage.session`, mints a shared **turn id** for each broadcast, and manages the session bookmark folders.
+3. **Content Scripts** are injected into the chatbot pages. A shared module (`content/common.js`) holds all the cross-site logic, while the per-site files (`content/claude.js`, `content/chatgpt.js`, `content/gemini.js`) supply only that site's CSS selectors, "new chat" behaviour, and history extraction.
+4. When you submit a prompt in a managed window, its content script forwards the text to the service worker, which verifies the source window is managed, mints a turn id, appends it to the session ledger, and forwards the prompt (with the turn id) to the other selected models.
+5. Target content scripts insert the text (using safe, framework-aware insertion — never `innerHTML`), trigger the site's submit handler, and **tag the freshly rendered turn** with the shared turn id via a `data-mp-turn` attribute (repaired by a `MutationObserver` if the site re-renders).
+6. **Sessions are durable.** Each session is an auto-created bookmark folder whose per-model bookmarks are kept pointed at the live conversation URLs as they stabilise (e.g. `claude.ai/new` → `claude.ai/chat/<id>`), plus a bookkeeping bookmark holding the order and turn-id ledger. Reopening a session from the popup re-tiles those URLs and **reattaches** the ids to the reloaded turns so alignment is preserved.
+7. **Export** asks every managed content script for its history (each user turn carries its `data-mp-turn` id), then groups answers across models **by turn id**, falling back to fuzzy prompt matching only for untagged turns.
 
 ## Permissions
 
 - `tabs`, `windows` — to find, position, resize, and swap the chatbot windows.
 - `storage` — to persist preferences (`local`) and the set of managed window IDs (`session`).
-- `bookmarks` — to create a folder hierarchy and save session links under the Bookmarks Bar.
+- `bookmarks` — to automatically save each session as a timestamped folder (plus a bookkeeping bookmark) under the Bookmarks Bar, and to list/reopen/delete saved sessions.
 - `host_permissions` for `gemini.google.com`, `claude.ai`, and `chatgpt.com` — to run the content scripts on those sites only.
 
 ## Installation from Source 💻
@@ -58,7 +61,7 @@ Enjoy supercharged multi-AI prompting!
 If you want to generate this exact implementation from scratch using a modern AI model, you can use the following comprehensive prompt:
 
 ```text
-Write a fully-functional, polished Manifest V3 Chrome Extension called "Multi-Prompt Split View" that tiles Gemini, Claude, and ChatGPT side-by-side and synchronizes prompts across all of them in real-time. The code must implement modern styling (glassmorphism/sleek dark/light theme support) and robust event orchestration.
+Write a fully-functional, polished Manifest V3 Chrome Extension called "Multi-Prompt Split View" that tiles Gemini, Claude, and ChatGPT side-by-side and synchronizes prompts across all of them in real-time. Each broadcast is stamped with a shared, hidden per-turn id (a `data-mp-turn` DOM attribute added after the message is sent, never injected into the prompt) so exported history can be aligned across models exactly — even for identical prompts. Every session is automatically saved as a Chrome bookmark folder and can be reopened (re-tiled, with alignment reattached) from a Saved Sessions picker. The code must implement modern styling (glassmorphism/sleek dark/light theme support) and robust event orchestration.
 
 Create the extension using the following file structure:
 - manifest.json
@@ -89,25 +92,28 @@ Here are the specifications for each file:
 
 ### 2. background.js
 - Maintain chatbot base URLs: Gemini (`https://gemini.google.com/app`), Claude (`https://claude.ai/new`), ChatGPT (`https://chatgpt.com/`).
-- Tab-to-Model matching: Compare tab URLs hostnames. To score matching tabs, prioritize active tabs and specific chat paths over homepages.
-- Manage "managed window IDs" in `chrome.storage.session`. Remove window IDs from storage when the window is closed (`chrome.windows.onRemoved`).
+- Tab-to-Model matching by hostname. Detect "stabilised" conversation URLs per model (e.g. Claude `/chat/<id>`, ChatGPT `/c/<id>`, Gemini `/app/<id>`) vs the blank launcher.
+- Track "managed window IDs" and an "active session" in `chrome.storage.session`. The active session links the live windows to their bookmark folder and carries the working copy of the turn-id ledger. On `chrome.windows.onRemoved`, drop the window id (and clear the session when its last window closes).
+- Mint a unique, roughly time-ordered **turn id** per broadcast (`generateTurnId`). The same id is handed to the source and all injection targets so their rendered turns can be matched exactly.
+- On `chrome.tabs.onUpdated`, when a managed model tab's URL stabilises, update that model's session bookmark to point at the live permalink.
 - Message listeners:
-  - `launch_tabs`: Tile selected chatbots horizontally across the available screen area. If an existing tab for a model is open, reuse it (if it's the only tab in a window, resize/move that window; otherwise extract it to a new window). If none exists, create a new window.
-  - `new_chat`: Send a message to active chatbot tabs to trigger a fresh conversation.
-  - `swap_tabs`: Swap positions of two tiled windows by swapping their window dimensions/coordinates. If they are in the same window (e.g. tabs), swap their URLs instead.
-  - `broadcast_prompt`: Intercept a prompt from a managed tab and send it to all other managed active tabs, avoiding echoes.
-  - `export_chats`: Query chat history from content scripts of all active models in the managed session and return it.
-  - `close_tiles`: Close all extension-managed tiled windows and clear the storage.
-  - `bookmark_session`: Find all chatbot tabs in the session, search/create a "Multi-prompt" bookmarks folder under Bookmarks Bar, create a timestamped subfolder, and bookmark each active chatbot URL.
+  - `new_chat`: The single entry point. If the selected models are already tiled, re-tile them and trigger a fresh conversation in each; otherwise open fresh tiled windows. Either way, rotate to a brand new auto-saved session (new bookmark folder).
+  - `swap_tabs`: Swap positions of two tiled windows by swapping their dimensions/coordinates (or their URLs if in the same window). Keep the session's recorded order in sync.
+  - `broadcast_prompt`: Verify the source window is managed, mint a turn id, append `{id, prompt-prefix}` to the session ledger (persisted into the meta bookmark), and forward the prompt + turn id to all other managed models. Respond to the sender with the turn id so it can tag its own turn.
+  - `export_chats`: Query chat history from content scripts of all managed models and return it (each user turn includes its `data-mp-turn` id).
+  - `close_tiles`: Close all extension-managed tiled windows and clear managed-window + active-session storage.
+  - `list_sessions` / `open_session` / `delete_session`: Enumerate saved session folders; reopen one (re-tile its saved URLs in order and send `reattach_turns` with the ledger to each tab); or remove a session's bookmark folder.
+- **Auto-bookmarking:** Every session creates a timestamped subfolder under a `"Multi-prompt"` parent folder (Bookmarks Bar). Inside it, create one bookmark per model (kept pointed at the live URL) and a "bogus" bookkeeping bookmark on the reserved `multi-prompt.invalid` host whose URL encodes the model order + turn-id ledger as JSON. The extension recognises and skips this bookmark when reopening.
 
 ### 3. popup.html
-- Clean container of fixed width (380px).
+- Clean container of fixed width (~560px, wide enough that saved-session labels fit without truncation).
 - Premium header with a stylized "M" logo gradient and Title "Multi-Prompt".
 - A Theme Toggle (Auto, Light, Dark) using radio inputs.
 - Checklist card container for Gemini, Claude, and ChatGPT with toggle indicators.
 - A dynamically filled Layout Preview section showing selected models in left-to-right order with interactive swap buttons (bidirectional arrows) between chips. Clicking a swap button updates storage and messages the background script to swap window coordinates.
+- Primary actions row: "New Chat" and "Close Tiles" buttons (no separate "Tile Windows" or "Bookmark" buttons — New Chat tiles on demand and bookmarking is automatic).
 - Export Chat History section: dropdown choice between "Markdown (.md)" or "PDF / Print (.pdf)" and an Export button.
-- Bottom actions: Row 1 containing "New Chat" and "Bookmark" buttons; Row 2 containing "Tile Windows" and "Close Tiles" buttons.
+- Saved Sessions section: a compact `<select>` dropdown listing saved sessions (`timestamp — Gemini / Claude / ChatGPT`) with adjacent "Open" and "✕" (delete) buttons, enabled only when a session is selected.
 - State-driven styling: show/hide error messages if no models are checked. Disable actions appropriately.
 
 ### 4. popup.css
@@ -121,34 +127,37 @@ Here are the specifications for each file:
 - Listen to DOMContentLoaded. Read and apply stored theme (Auto/Light/Dark), checklist checkboxes, and export format choices from storage.
 - Synchronize theme settings with OS system theme when set to 'auto'.
 - Dynamically build and render the Layout Preview chips with swap controls. Clicking a swap control swaps indices in the list, saves to storage, and posts a message to trigger window physical swapping.
-- Set disabled states for action buttons (Bookmark, Close Tiles, Export) dynamically based on background session state.
-- Handle Markdown/PDF export action: request histories from background worker, align chatbot turns chronologically using matching heuristics (comparing user prompts with tolerance for minor spacing/casing mismatches), and output format (either save markdown string as a file download, or save history to local storage and open export.html).
+- "New Chat" sends `new_chat` with the selected models and screen geometry (tile-if-needed + fresh chat). Set disabled states for Close Tiles / Export based on background session state.
+- Saved Sessions: request the list from the background, populate the dropdown, and wire Open (`open_session`) and Delete (`delete_session`); refresh the list after New Chat / Close Tiles / delete.
+- Handle Markdown/PDF export action: request histories from the background worker, align chatbot turns **by shared turn id** (falling back to fuzzy prompt matching for untagged turns), and output the chosen format (save the markdown string as a file download, or save history to local storage and open export.html).
 
 ### 6. content/common.js
-- Encapsulate prompt broadcast, content injection, echo prevention, and history extraction in a global `MultiPrompt` object.
+- Encapsulate prompt broadcast, content injection, echo prevention, turn tagging, and history extraction in a global `MultiPrompt` object.
 - Maintain programmatic flags (`isProgrammaticInput = false`) and de-duplication buffers to avoid loop-back echoes or double broadcasts.
 - Value setters: Set editor text (Textarea, Input, or ContentEditable) safely using descriptors, append content/events safely, dispatch React/framework-aware events ('input' and 'change').
+- **Turn tagging:** After any submission, find the freshly rendered user-message element (snapshot before, diff after) and stamp it with a `data-mp-turn` attribute carrying the shared turn id. Keep a registry and a `MutationObserver` that re-applies the attribute if the framework strips it on re-render. The id is added _after_ send, so it is never part of the prompt the model receives.
 - Message listener:
-  - `inject_prompt`: Call editor setting logic, nudge the editor model using `document.execCommand('insertText')`, wait briefly, then click the send button (or dispatch Enter).
-  - `new_chat`: Execute site-specific newChat logic.
-  - `extract_chat_history`: Execute site-specific DOM parsing and map HTML elements to markdown elements (P, strong, code blocks, blockquotes, lists, tables).
-- Keydown listener on `document`: Intercept Enter keypresses on target editors (ignoring Shift/IME/programmatic values), prevent default behaviors, broadcast text, and submit.
-- Click/Mousedown listener: Detect clicks on send buttons, extract content, and broadcast.
+  - `inject_prompt`: Set the editor text, nudge rich editors with `document.execCommand('insertText')`, wait briefly, click send (or dispatch Enter), then tag the new turn with `request.turnId`.
+  - `new_chat`: Clear the tagged-turn registry and execute site-specific newChat logic.
+  - `reattach_turns`: For a reloaded (bookmarked) conversation, wait for the history to render, then re-stamp the user turns in order with the ledger's turn ids.
+  - `extract_chat_history`: Execute site-specific DOM parsing, mapping HTML to markdown (P, strong, code blocks, blockquotes, lists, tables); include each user turn's `data-mp-turn` id.
+- Keydown listener on `document`: Intercept Enter keypresses on target editors (ignoring Shift/IME/programmatic values), prevent default behaviors, broadcast text (receiving the turn id back), submit, and tag the local turn.
+- Click/Mousedown listener: Detect clicks on send buttons, extract content, broadcast, and tag the local turn.
 
 ### 7. content/gemini.js, claude.js, chatgpt.js
 - Invoke `MultiPrompt.init({...})` passing site selectors and callbacks.
-- Selectors:
-  - Gemini: input selector `rich-textarea div[contenteditable="true"], .ProseMirror`, send selector `button[aria-label*="Send message"], .send-button`. New chat clicks the "New Chat" link/button or redirects to homepage.
-  - Claude: input selector `.ProseMirror, div[contenteditable="true"]`, send selector `button[aria-label*="Send"], button[data-testid="send-button"]`. New chat clicks `/new` link or redirects.
-  - ChatGPT: input selector `#prompt-textarea, div[contenteditable="true"]`, send selector `button[data-testid="send-button"]`. New chat clicks new-chat buttons or redirects.
-- Extraction rules: Iterate user prompts and assistant message containers, strip screen-reader prefixes (like "You said"), parse formatting, and compile history turns.
+- Selectors (each also provides a `userTurnSelector` — the rendered user-message element to stamp with the turn id):
+  - Gemini: input `rich-textarea div[contenteditable="true"], .ProseMirror`, send `button[aria-label*="Send message"], .send-button`, user turn `user-query`. New chat clicks the "New Chat" link/button or redirects to homepage.
+  - Claude: input `.ProseMirror, div[contenteditable="true"]`, send `button[aria-label*="Send"], button[data-testid="send-button"]`, user turn `[data-testid="user-message"], .font-user-message`. New chat clicks `/new` link or redirects.
+  - ChatGPT: input `#prompt-textarea, div[contenteditable="true"]`, send `button[data-testid="send-button"]`, user turn `[data-message-author-role="user"]`. New chat clicks new-chat buttons or redirects.
+- Extraction rules: Iterate user prompts and assistant message containers, strip screen-reader prefixes (like "You said"), parse formatting, read each user turn's `data-mp-turn` id, and compile history turns.
 
 ### 8. export.html & export.js
-- Standalone HTML page with styling for printing/saving to PDF.
+- Standalone HTML page with styling for printing/saving to PDF, plus an action bar with "Close Window" and "Print / Save as PDF" buttons.
 - Theme support matching current user preference.
-- Retrieve exported history from storage, group turns chronologically, and render user prompt blocks stacked with response cards colored by brand.
+- Retrieve exported history from storage, align turns **by shared turn id** (same logic as the popup; fuzzy fallback for untagged turns), and render user prompt blocks stacked with response cards colored by brand.
 - Render markdown elements into standard HTML using a simple custom markdown regex parser.
-- Auto-trigger print view (`window.print()`) after loading.
+- Do **not** auto-print — the user invokes printing via the "Print / Save as PDF" button.
 
 Provide code implementations that are robust, error-tolerant, and handle corner cases gracefully. Avoid using placeholders or simplified loops.
 ```

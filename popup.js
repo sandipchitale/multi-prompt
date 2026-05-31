@@ -40,14 +40,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Extension Logic ---
   const checkboxes = document.querySelectorAll('.ai-checkbox');
-  const launchBtn = document.getElementById('launch-btn');
   const errorMsg = document.getElementById('error-msg');
   const layoutPreviewSection = document.getElementById('layout-preview-section');
   const layoutPreviewContainer = document.getElementById('layout-preview-container');
   const exportBtn = document.getElementById('export-btn');
   const exportFormat = document.getElementById('export-format');
   const closeTilesBtn = document.getElementById('close-tiles-btn');
-  const bookmarkBtn = document.getElementById('bookmark-btn');
+  const sessionsSelect = document.getElementById('sessions-select');
+  const sessionOpenBtn = document.getElementById('session-open-btn');
+  const sessionDeleteBtn = document.getElementById('session-delete-btn');
+  let savedSessions = [];
 
   // We maintain an ordered array of selected models: e.g. ['gemini', 'claude']
   let selectedModels = [];
@@ -144,12 +146,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (selectedModels.length === 0) {
       errorMsg.classList.remove('hidden');
-      launchBtn.disabled = true;
       newChatBtn.disabled = true;
       if (exportBtn) exportBtn.disabled = true;
     } else {
       errorMsg.classList.add('hidden');
-      launchBtn.disabled = false;
       newChatBtn.disabled = false;
       if (exportBtn) exportBtn.disabled = false;
     }
@@ -157,10 +157,109 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.session.get(['managedWindowIds'], (result) => {
       const hasTiles = result.managedWindowIds && result.managedWindowIds.length > 0;
       if (closeTilesBtn) closeTilesBtn.disabled = !hasTiles;
-      if (bookmarkBtn) bookmarkBtn.disabled = !hasTiles;
     });
 
     renderLayoutPreview();
+  }
+
+  // --- Saved Sessions -----------------------------------------------------
+
+  function currentScreenInfo() {
+    return {
+      availLeft: window.screen.availLeft || 0,
+      availTop: window.screen.availTop || 0,
+      availWidth: window.screen.availWidth || window.innerWidth,
+      availHeight: window.screen.availHeight || window.innerHeight
+    };
+  }
+
+  function loadSessions() {
+    if (!sessionsSelect) return;
+    chrome.runtime.sendMessage({ action: 'list_sessions' }, (response) => {
+      if (chrome.runtime.lastError || !response || response.status !== 'success') {
+        return;
+      }
+      savedSessions = response.sessions || [];
+      populateSessionsSelect();
+    });
+  }
+
+  function populateSessionsSelect() {
+    sessionsSelect.innerHTML = '';
+
+    if (savedSessions.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No saved sessions';
+      sessionsSelect.appendChild(opt);
+      sessionsSelect.disabled = true;
+    } else {
+      sessionsSelect.disabled = false;
+      savedSessions.forEach(session => {
+        const opt = document.createElement('option');
+        opt.value = session.folderId;
+        const label = session.title.replace(/^Session - /, '');
+        const models = session.models
+          .map(m => (MODEL_METADATA[m] ? MODEL_METADATA[m].name : m))
+          .join(' / ');
+        opt.textContent = models ? `${label} — ${models}` : label;
+        sessionsSelect.appendChild(opt);
+      });
+    }
+    updateSessionButtons();
+  }
+
+  function updateSessionButtons() {
+    const hasSelection = !!(sessionsSelect && sessionsSelect.value);
+    if (sessionOpenBtn) sessionOpenBtn.disabled = !hasSelection;
+    if (sessionDeleteBtn) sessionDeleteBtn.disabled = !hasSelection;
+  }
+
+  if (sessionsSelect) {
+    sessionsSelect.addEventListener('change', updateSessionButtons);
+  }
+
+  if (sessionOpenBtn) {
+    sessionOpenBtn.addEventListener('click', () => {
+      const folderId = sessionsSelect.value;
+      if (!folderId) return;
+      const textSpan = sessionOpenBtn.querySelector('.btn-text');
+      const originalText = textSpan.textContent;
+      textSpan.textContent = 'Opening…';
+      sessionOpenBtn.disabled = true;
+
+      chrome.runtime.sendMessage({
+        action: 'open_session',
+        folderId: folderId,
+        screenInfo: currentScreenInfo()
+      }, (response) => {
+        if (chrome.runtime.lastError || !response || response.status !== 'success') {
+          alert('Could not open this session.');
+          textSpan.textContent = originalText;
+          sessionOpenBtn.disabled = false;
+          return;
+        }
+        setTimeout(() => { updateState(); window.close(); }, 600);
+      });
+    });
+  }
+
+  if (sessionDeleteBtn) {
+    sessionDeleteBtn.addEventListener('click', () => {
+      const folderId = sessionsSelect.value;
+      if (!folderId) return;
+      const session = savedSessions.find(s => s.folderId === folderId);
+      const name = session ? session.title : 'this session';
+      if (!confirm(`Delete saved session "${name}"? This removes its bookmark folder.`)) return;
+
+      chrome.runtime.sendMessage({ action: 'delete_session', folderId: folderId }, (response) => {
+        if (chrome.runtime.lastError || !response || response.status !== 'success') {
+          alert('Could not delete this session.');
+          return;
+        }
+        loadSessions();
+      });
+    });
   }
 
   checkboxes.forEach(cb => {
@@ -180,54 +279,27 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // TILE WINDOWS BUTTON
-  launchBtn.addEventListener('click', () => {
-    if (selectedModels.length > 0) {
-      const textSpan = launchBtn.querySelector('.btn-text');
-      const originalText = textSpan.textContent;
-      textSpan.textContent = "Tiling...";
-      launchBtn.disabled = true;
-      
-      const screenInfo = {
-        availLeft: window.screen.availLeft || 0,
-        availTop: window.screen.availTop || 0,
-        availWidth: window.screen.availWidth || window.innerWidth,
-        availHeight: window.screen.availHeight || window.innerHeight
-      };
-
-      chrome.runtime.sendMessage({
-        action: 'launch_tabs',
-        models: selectedModels,
-        screenInfo: screenInfo
-      }, () => {
-        const err = chrome.runtime.lastError;
-        setTimeout(() => {
-          textSpan.textContent = originalText;
-          launchBtn.disabled = false;
-          updateState();
-        }, 1000);
-      });
-    }
-  });
-
-  // NEW CHAT BUTTON
+  // NEW CHAT BUTTON — tiles the selected models if they aren't open yet, then
+  // starts a fresh chat in each (and a new saved session).
   const newChatBtn = document.getElementById('new-chat-btn');
   newChatBtn.addEventListener('click', () => {
     if (selectedModels.length > 0) {
       const textSpan = newChatBtn.querySelector('.btn-text');
       const originalText = textSpan.textContent;
-      textSpan.textContent = "Clearing...";
+      textSpan.textContent = "Starting...";
       newChatBtn.disabled = true;
-      
+
       chrome.runtime.sendMessage({
         action: 'new_chat',
-        models: selectedModels
+        models: selectedModels,
+        screenInfo: currentScreenInfo()
       }, () => {
         const err = chrome.runtime.lastError;
         setTimeout(() => {
           textSpan.textContent = originalText;
           updateState();
-        }, 800);
+          loadSessions();
+        }, 1000);
       });
     }
   });
@@ -329,34 +401,6 @@ document.addEventListener('DOMContentLoaded', () => {
     URL.revokeObjectURL(url);
   }
 
-  // BOOKMARK SESSION BUTTON
-  if (bookmarkBtn) {
-    bookmarkBtn.addEventListener('click', () => {
-      const textSpan = bookmarkBtn.querySelector('.btn-text');
-      const originalText = textSpan.textContent;
-      textSpan.textContent = "Bookmarking...";
-      bookmarkBtn.disabled = true;
-
-      chrome.runtime.sendMessage({ action: 'bookmark_session' }, (response) => {
-        const err = chrome.runtime.lastError;
-        
-        if (err || !response || response.status === 'error') {
-          console.error("Bookmarking failed:", err || response?.error);
-          alert("Bookmarking failed. Make sure your tiled chatbot windows are open.");
-          textSpan.textContent = originalText;
-          updateState();
-          return;
-        }
-
-        textSpan.textContent = "Bookmarked!";
-        setTimeout(() => {
-          textSpan.textContent = originalText;
-          updateState();
-        }, 1500);
-      });
-    });
-  }
-
   // CLOSE TILES BUTTON
   if (closeTilesBtn) {
     closeTilesBtn.addEventListener('click', () => {
@@ -384,6 +428,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initial state check
   updateState();
+  loadSessions();
 });
 
 // Group a single model's history into turns: { prompt, response }
@@ -399,9 +444,10 @@ function getChatbotTurns(messages) {
         currentTurn = null;
       }
       if (!currentTurn) {
-        currentTurn = { prompt: msgText, response: '' };
+        currentTurn = { prompt: msgText, response: '', turnId: msg.turnId || null };
       } else {
         currentTurn.prompt += '\n\n' + msgText;
+        if (!currentTurn.turnId && msg.turnId) currentTurn.turnId = msg.turnId;
       }
     } else if (msg.role === 'assistant') {
       if (!currentTurn) {
@@ -444,7 +490,12 @@ function promptsMatch(p1, p2) {
   return false;
 }
 
-// Align history across all chatbots
+// Align history across all chatbots.
+//
+// Turns broadcast by the extension carry a shared turnId stamped onto every
+// model's rendered turn, so they are grouped exactly by that id. Turns without
+// an id (e.g. typed before tiling, or where tagging failed) fall back to the
+// fuzzy prompt-text match so nothing is silently dropped.
 function alignHistory(history) {
   const modelTurns = {};
   Object.keys(history).forEach(model => {
@@ -452,26 +503,36 @@ function alignHistory(history) {
   });
 
   const alignedTurns = [];
-
-  const findMatchingAlignedTurn = (prompt) => {
-    return alignedTurns.find(item => promptsMatch(item.prompt, prompt));
-  };
+  const byTurnId = new Map();
 
   Object.keys(modelTurns).forEach(model => {
     modelTurns[model].forEach((turn, idx) => {
-      let matched = findMatchingAlignedTurn(turn.prompt);
-      if (!matched) {
-        matched = {
-          prompt: turn.prompt,
-          responses: {},
-          indices: []
-        };
-        alignedTurns.push(matched);
+      let matched = null;
+      if (turn.turnId && byTurnId.has(turn.turnId)) {
+        matched = byTurnId.get(turn.turnId);
       } else {
-        if (turn.prompt.length > matched.prompt.length) {
-          matched.prompt = turn.prompt;
-        }
+        // Find the earliest bucket this model hasn't filled yet whose prompt
+        // matches and whose id is compatible. "Compatible" means at least one
+        // side is untagged, or both ids are equal — so an untagged turn (e.g. a
+        // model that lost its tag) still merges into a tagged group, while two
+        // DIFFERENT ids never merge (keeping identical prompts separate).
+        matched = alignedTurns.find(item =>
+          !(model in item.responses) &&
+          (item.turnId == null || turn.turnId == null || item.turnId === turn.turnId) &&
+          promptsMatch(item.prompt, turn.prompt)
+        );
       }
+
+      if (!matched) {
+        matched = { prompt: turn.prompt, responses: {}, turnId: null, indices: [] };
+        alignedTurns.push(matched);
+      }
+      if (turn.turnId && matched.turnId == null) {
+        matched.turnId = turn.turnId;
+        byTurnId.set(turn.turnId, matched);
+      }
+      if (turn.prompt.length > matched.prompt.length) matched.prompt = turn.prompt;
+
       matched.responses[model] = turn.response;
       matched.indices.push(idx);
     });
@@ -486,10 +547,11 @@ function alignHistory(history) {
   // Sort aligned turns chronologically by average index
   alignedTurns.sort((a, b) => a.avgIndex - b.avgIndex);
 
-  // Clean up indices and avgIndex properties
+  // Clean up bookkeeping properties
   alignedTurns.forEach(turn => {
     delete turn.indices;
     delete turn.avgIndex;
+    delete turn.turnId;
   });
 
   return alignedTurns;

@@ -30,16 +30,15 @@ body {
   background-color: var(--bg-color);
   color: var(--text-main);
   margin: 0;
-  padding: 16px;
+  padding: 14px;
   box-sizing: border-box;
-  width: 380px; /* Fixed width for Extension Popup */
-  min-height: 500px;
+  width: 560px; /* Fixed width for Extension Popup */
 }
 
 .container {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
   width: 100%;
 }
 
@@ -112,7 +111,7 @@ h2 {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 8px 14px;
   position: relative;
 }
 
@@ -284,7 +283,7 @@ h2 {
   background: linear-gradient(135deg, var(--accent), #7d52ff);
   color: white;
   border: none;
-  padding: 10px 16px;
+  padding: 8px 16px;
   border-radius: var(--border-radius);
   font-size: 0.9rem;
   font-weight: 600;
@@ -314,7 +313,7 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .button-group button {
@@ -384,9 +383,9 @@ h2 {
 .export-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   background-color: var(--panel-bg);
-  padding: 10px 14px;
+  padding: 8px 12px;
   border-radius: var(--border-radius);
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
@@ -444,4 +443,57 @@ h2 {
 
 .button-row button {
   flex: 1;
+}
+
+/* --- Saved Sessions --- */
+.sessions-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background-color: var(--panel-bg);
+  padding: 8px 12px;
+  border-radius: var(--border-radius);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="light"] .sessions-section {
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.sessions-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.sessions-controls .export-select {
+  flex-grow: 1;
+  min-width: 0;
+}
+
+.session-action {
+  flex-shrink: 0;
+  border: 1px solid var(--btn-border);
+  background: transparent;
+  color: var(--text-main);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.session-action.delete {
+  color: var(--text-muted);
+}
+
+.session-action.delete:hover:not(:disabled) {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.session-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

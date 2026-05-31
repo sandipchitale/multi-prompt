@@ -16,7 +16,98 @@
   let lastBroadcastPrompt = '';
   let lastBroadcastTime = 0;
 
-  function broadcastPrompt(prompt, source) {
+  // Attribute stamped onto each rendered user-message element so the same turn
+  // can be matched exactly across all models at export time. It is added to the
+  // DOM *after* the message is sent, so the model itself never sees it — no
+  // prompt contamination, unlike embedding a marker in the prompt text.
+  const TURN_ATTR = 'data-mp-turn';
+
+  // Ordinal-indexed ledger of turn ids for THIS page: turnLedger[i] is the id of
+  // the i-th user turn. We re-apply tags by POSITION rather than by element
+  // reference, so they survive frameworks that replace the turn node on
+  // re-render (notably Gemini/Angular, which silently dropped reference-based
+  // tags). siteConfig is the config handed to init(), used to locate user turns.
+  const turnLedger = [];
+  let siteConfig = null;
+  let turnObserver = null;
+  let reconcileQueued = false;
+
+  function getUserTurnEls() {
+    if (!siteConfig || !siteConfig.userTurnSelector) return [];
+    return Array.from(document.querySelectorAll(siteConfig.userTurnSelector));
+  }
+
+  // Ensure each rendered user turn carries the id recorded for its position.
+  function reconcileTurnTags() {
+    const els = getUserTurnEls();
+    for (let i = 0; i < turnLedger.length; i++) {
+      const id = turnLedger[i];
+      const el = els[i];
+      if (id && el && el.getAttribute(TURN_ATTR) !== id) {
+        el.setAttribute(TURN_ATTR, id);
+      }
+    }
+  }
+
+  // Coalesce the many mutations a chat page emits (streaming responses, etc.)
+  // into one reconcile per frame.
+  function scheduleReconcile() {
+    if (reconcileQueued) return;
+    reconcileQueued = true;
+    requestAnimationFrame(() => { reconcileQueued = false; reconcileTurnTags(); });
+  }
+
+  function ensureTurnObserver() {
+    if (turnObserver) return;
+    turnObserver = new MutationObserver(scheduleReconcile);
+    turnObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // After a submission, wait for the new user turn to render, then record its id
+  // at its ordinal position (it is the newest, hence last) and stamp it.
+  function tagNewUserTurn(turnId, beforeCount) {
+    if (!turnId || !siteConfig || !siteConfig.userTurnSelector) return;
+    let attempts = 0;
+
+    const tryTag = () => {
+      const els = getUserTurnEls();
+      if (els.length > beforeCount) {
+        turnLedger[els.length - 1] = turnId;
+        reconcileTurnTags();
+        ensureTurnObserver();
+        return;
+      }
+      if (attempts++ < 40) setTimeout(tryTag, 250); // ~10s of grace
+    };
+
+    tryTag();
+  }
+
+  // Re-stamp the turns of a reloaded (bookmarked) conversation with their
+  // original ids. The history loads asynchronously, so we wait until at least as
+  // many user turns have rendered as the ledger expects, then tag them in order.
+  function reattachTurns(turns) {
+    if (!turns || !turns.length || !siteConfig || !siteConfig.userTurnSelector) return;
+    let attempts = 0;
+
+    const tryReattach = () => {
+      const els = getUserTurnEls();
+      if (els.length >= turns.length) {
+        for (let i = 0; i < turns.length; i++) turnLedger[i] = turns[i].id;
+        reconcileTurnTags();
+        ensureTurnObserver();
+        return;
+      }
+      if (attempts++ < 60) setTimeout(tryReattach, 500); // ~30s for history to load
+    };
+
+    tryReattach();
+  }
+
+  // Broadcast the user's prompt. The background worker mints the shared turn id
+  // and returns it; onTurnId is invoked with it so the caller can tag the local
+  // turn with the same id the injection targets will use.
+  function broadcastPrompt(prompt, source, onTurnId) {
     const now = Date.now();
     if (prompt === lastBroadcastPrompt && now - lastBroadcastTime < 1000) {
       return;
@@ -26,7 +117,10 @@
 
     chrome.runtime.sendMessage(
       { action: 'broadcast_prompt', prompt: prompt, source: source },
-      () => void chrome.runtime.lastError
+      (response) => {
+        void chrome.runtime.lastError;
+        if (onTurnId && response && response.turnId) onTurnId(response.turnId);
+      }
     );
   }
 
@@ -99,7 +193,7 @@
   // still mounting its editor, then submits via clickSendOrEnter. The injection
   // guard is released only once submission has actually been triggered, rather
   // than after a fixed timeout.
-  function injectPrompt(config, prompt) {
+  function injectPrompt(config, prompt, turnId) {
     let attempts = 0;
 
     const tryInject = () => {
@@ -113,6 +207,10 @@
         return;
       }
 
+      // Snapshot the user-turn count before we submit so the freshly rendered
+      // one can be identified and tagged with the shared turn id.
+      const beforeCount = getUserTurnEls().length;
+
       setEditorText(field, prompt);
       // Deprecated but still the most reliable nudge for rich editors
       // (ProseMirror/Lexical) to commit the change to their internal model.
@@ -120,6 +218,7 @@
 
       setTimeout(() => {
         clickSendOrEnter(config, field);
+        tagNewUserTurn(turnId, beforeCount);
         setTimeout(() => { isProgrammaticInput = false; }, 500);
       }, 1000);
     };
@@ -128,13 +227,21 @@
   }
 
   function init(config) {
+    siteConfig = config;
+
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.action === 'inject_prompt') {
         isProgrammaticInput = true;
-        injectPrompt(config, request.prompt);
+        injectPrompt(config, request.prompt, request.turnId);
         sendResponse({ success: true });
       } else if (request.action === 'new_chat') {
+        // A new chat is a brand new conversation; forget the turns we tagged in
+        // the old one so the repair observer doesn't chase detached nodes.
+        turnLedger.length = 0;
         config.newChat();
+        sendResponse({ success: true });
+      } else if (request.action === 'reattach_turns') {
+        reattachTurns(request.turns);
         sendResponse({ success: true });
       } else if (request.action === 'extract_chat_history') {
         const history = typeof config.extractHistory === 'function' ? config.extractHistory() : [];
@@ -160,7 +267,10 @@
       e.preventDefault();
       e.stopPropagation();
 
-      broadcastPrompt(prompt, config.source);
+      // Capture the user-turn count before we submit so our own rendered turn
+      // can be tagged with the same id the broadcast targets receive.
+      const beforeCount = getUserTurnEls().length;
+      broadcastPrompt(prompt, config.source, (turnId) => tagNewUserTurn(turnId, beforeCount));
 
       isProgrammaticInput = true;
       clickSendOrEnter(config, field);
@@ -175,7 +285,10 @@
       if (!field) return;
 
       const prompt = readPrompt(field);
-      if (prompt) broadcastPrompt(prompt, config.source);
+      if (!prompt) return;
+
+      const beforeCount = getUserTurnEls().length;
+      broadcastPrompt(prompt, config.source, (turnId) => tagNewUserTurn(turnId, beforeCount));
     };
 
     document.addEventListener('mousedown', handleSendActivation, true);

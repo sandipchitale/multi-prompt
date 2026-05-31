@@ -4,6 +4,8 @@ MultiPrompt.init({
   source: 'chatgpt',
   inputSelector: '#prompt-textarea, div[contenteditable="true"]',
   sendSelector: 'button[data-testid="send-button"], button[aria-label*="Send"]',
+  // The rendered user-message element we stamp with the shared turn id.
+  userTurnSelector: '[data-message-author-role="user"]',
   newChat() {
     let newChatBtn = document.querySelector('a[data-testid="new-chat-button"]') ||
                      document.querySelector('button[aria-label="New chat"]');
@@ -33,7 +35,9 @@ MultiPrompt.init({
       if (role === 'user') {
         const text = el.innerText.trim();
         if (text) {
-          history.push({ role: 'user', text: text });
+          const turnId = el.getAttribute('data-mp-turn') ||
+                         el.closest('[data-mp-turn]')?.getAttribute('data-mp-turn') || null;
+          history.push({ role: 'user', text: text, turnId: turnId });
         }
       } else if (role === 'assistant') {
         const markdownEl = el.querySelector('.markdown');
