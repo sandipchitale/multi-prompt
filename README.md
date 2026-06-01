@@ -12,7 +12,7 @@ Instead of typing prompts inside an extension panel, you type and submit a promp
 - **Exact Cross-Model Alignment:** Each broadcast is stamped with a shared, hidden **turn id** (a `data-mp-turn` DOM attribute added _after_ the message is sent — never injected into the prompt text the model sees). Export uses these ids to group every model's answer to the same prompt exactly, even when two prompts are textually identical.
 - **Automatic Session Bookmarking:** Every session is auto-saved into a timestamped subfolder under a `"Multi-prompt"` parent folder in Chrome Bookmarks — no manual "bookmark" step. A small bookkeeping bookmark inside each folder stores the window order and the turn-id ledger (it uses the reserved `multi-prompt.invalid` host, so it can never navigate anywhere, and the extension skips it when reopening).
 - **Saved Sessions Picker:** Reopen any saved session from a compact dropdown in the popup. The extension re-tiles the saved conversations in order and **reattaches** the original turn ids, so exported alignment survives a reload. Delete a session (and its bookmark folder) from the same control.
-- **Visual Tiling Order & Swapping:** Arrange the left-to-right window order directly from the popup. Swapping physically slides the windows on screen without page reloads or losing your chat state.
+- **Visual Tiling Order & Drag-to-Reorder:** Select chatbots and arrange their left-to-right window order from one side-by-side row in the popup. Dragging a card to a new position physically slides the open windows on screen to match — without page reloads or losing your chat state.
 - **Export Chat History:** Export conversation history from all active chatbots into Markdown (`.md`) or a clean PDF / print template. The PDF view renders immediately and you invoke **Print / Save as PDF** when ready (no surprise print dialog).
 - **Close Tiles:** Close all active, extension-managed tiled windows instantly with a single button click.
 - **Selective Syncing:** Only prompts typed inside extension-managed tiled windows are synchronized. Chatbots you open yourself in normal tabs are ignored.
@@ -98,7 +98,7 @@ Here are the specifications for each file:
 - On `chrome.tabs.onUpdated`, when a managed model tab's URL stabilises, update that model's session bookmark to point at the live permalink.
 - Message listeners:
   - `new_chat`: The single entry point. If the selected models are already tiled, re-tile them and trigger a fresh conversation in each; otherwise open fresh tiled windows. Either way, rotate to a brand new auto-saved session (new bookmark folder).
-  - `swap_tabs`: Swap positions of two tiled windows by swapping their dimensions/coordinates (or their URLs if in the same window). Keep the session's recorded order in sync.
+  - `rearrange_tiles`: Re-tile the open managed windows to match a new left-to-right model order (from a drag-and-drop reorder in the popup). Collects the windows' current geometry slots, sorts them left-to-right, and reassigns each model to the slot at its new index. Keep the session's recorded order in sync.
   - `broadcast_prompt`: Verify the source window is managed, mint a turn id, append `{id, prompt-prefix}` to the session ledger (persisted into the meta bookmark), and forward the prompt + turn id to all other managed models. Respond to the sender with the turn id so it can tag its own turn.
   - `export_chats`: Query chat history from content scripts of all managed models and return it (each user turn includes its `data-mp-turn` id).
   - `close_tiles`: Close all extension-managed tiled windows and clear managed-window + active-session storage.
@@ -109,8 +109,7 @@ Here are the specifications for each file:
 - Clean container of fixed width (~560px, wide enough that saved-session labels fit without truncation).
 - Premium header with a stylized "M" logo gradient and Title "Multi-Prompt".
 - A Theme Toggle (Auto, Light, Dark) using radio inputs.
-- Checklist card container for Gemini, Claude, and ChatGPT with toggle indicators.
-- A dynamically filled Layout Preview section showing selected models in left-to-right order with interactive swap buttons (bidirectional arrows) between chips. Clicking a swap button updates storage and messages the background script to swap window coordinates.
+- A single side-by-side row of draggable cards for Gemini, Claude, and ChatGPT (rendered dynamically), with a swap button between adjacent cards. Each card has a toggle indicator and a drag handle. The cards sit left-to-right to mirror the window tiling: their order **is** the tile order. Click a card to select/deselect it (deselected cards stay in the row, dimmed, and are ignored when tiling); reorder either by dragging a card or by clicking the swap button between two cards. This merges the former "Select active Chatbots" checklist and the separate "Window Tile Order" preview into one control.
 - Primary actions row: "New Chat" and "Close Tiles" buttons (no separate "Tile Windows" or "Bookmark" buttons — New Chat tiles on demand and bookmarking is automatic).
 - Export Chat History section: dropdown choice between "Markdown (.md)" or "PDF / Print (.pdf)" and an Export button.
 - Saved Sessions section: a compact `<select>` dropdown listing saved sessions (`timestamp — Gemini / Claude / ChatGPT`) with adjacent "Open" and "✕" (delete) buttons, enabled only when a session is selected.
@@ -119,14 +118,13 @@ Here are the specifications for each file:
 ### 4. popup.css
 - Custom fonts (e.g., Inter) and responsive CSS custom properties (colors, borders, gradients).
 - Theme styling: Light and Dark modes. Dark uses deep black/navy background `#0f111a` and panel background `#161925`. Light uses off-white `#f7f9fa` and white panels.
-- Custom styled checkboxes masqueraded as premium cards with subtle transitions, card borders highlighting upon checkbox activation, and neon colored avatars (Gemini: blue gradient, Claude: orange, ChatGPT: emerald).
-- Tiling order preview chips with rounded edges and transition effects on the swap arrows.
+- Side-by-side selectable cards (one per model) laid out in a horizontal row, each with the model name and a toggle switch on a single line plus a drag handle, and a small swap button between adjacent cards. Selected cards highlight their border; deselected cards are dimmed; drop indicators show where a dragged card will land.
 - Elegant button states (hover, active, disabled) using smooth color transitions.
 
 ### 5. popup.js
 - Listen to DOMContentLoaded. Read and apply stored theme (Auto/Light/Dark), checklist checkboxes, and export format choices from storage.
 - Synchronize theme settings with OS system theme when set to 'auto'.
-- Dynamically build and render the Layout Preview chips with swap controls. Clicking a swap control swaps indices in the list, saves to storage, and posts a message to trigger window physical swapping.
+- Dynamically build and render the row of model cards from the saved order, inserting a swap button between adjacent cards. Clicking a card toggles its selection; dragging a card or clicking a swap button reorders it. Each reorder saves the new order to storage and (when windows are already tiled) posts `rearrange_tiles` to physically re-tile the open windows to match.
 - "New Chat" sends `new_chat` with the selected models and screen geometry (tile-if-needed + fresh chat). Set disabled states for Close Tiles / Export based on background session state.
 - Saved Sessions: request the list from the background, populate the dropdown, and wire Open (`open_session`) and Delete (`delete_session`); refresh the list after New Chat / Close Tiles / delete.
 - Handle Markdown/PDF export action: request histories from the background worker, align chatbot turns **by shared turn id** (falling back to fuzzy prompt matching for untagged turns), and output the chosen format (save the markdown string as a file download, or save history to local storage and open export.html).

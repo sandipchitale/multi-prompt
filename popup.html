@@ -27,46 +27,12 @@
         </div>
       </div>
 
-      <p class="subtitle">Select active Chatbots:</p>
+      <p class="subtitle">
+        Active Chatbots &mdash; drag to set tile order (left → right):
+      </p>
 
-      <div class="cards-container">
-        <!-- Gemini Card -->
-        <label class="model-card gemini-card" for="gemini">
-          <input type="checkbox" id="gemini" value="gemini" class="ai-checkbox" />
-          <div class="card-content">
-            <div class="model-avatar gemini-avatar">G</div>
-            <span class="model-name">Gemini</span>
-            <div class="toggle-indicator"></div>
-          </div>
-        </label>
-
-        <!-- Claude Card -->
-        <label class="model-card claude-card" for="claude">
-          <input type="checkbox" id="claude" value="claude" class="ai-checkbox" />
-          <div class="card-content">
-            <div class="model-avatar claude-avatar">C</div>
-            <span class="model-name">Claude</span>
-            <div class="toggle-indicator"></div>
-          </div>
-        </label>
-
-        <!-- ChatGPT Card -->
-        <label class="model-card chatgpt-card" for="chatgpt">
-          <input type="checkbox" id="chatgpt" value="chatgpt" class="ai-checkbox" />
-          <div class="card-content">
-            <div class="model-avatar chatgpt-avatar">GPT</div>
-            <span class="model-name">ChatGPT</span>
-            <div class="toggle-indicator"></div>
-          </div>
-        </label>
-      </div>
-
-      <!-- Layout Preview Section -->
-      <div id="layout-preview-section" class="layout-preview-section hidden">
-        <p class="subtitle">Window Tile Order (Left to Right):</p>
-        <div id="layout-preview-container" class="layout-preview-container">
-          <!-- Dynamically populated -->
-        </div>
+      <div id="chatbots-list" class="cards-container">
+        <!-- Dynamically populated -->
       </div>
 
       <div id="error-msg" class="status-msg error hidden">

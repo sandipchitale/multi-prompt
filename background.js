@@ -146,9 +146,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'new_chat') {
     handleNewChat(request.models, request.screenInfo);
     sendResponse({ status: 'new_chat_sent' });
-  } else if (request.action === 'swap_tabs') {
-    swapTabs(request.model1, request.model2);
-    sendResponse({ status: 'swapping' });
+  } else if (request.action === 'rearrange_tiles') {
+    rearrangeTiles(request.models);
+    sendResponse({ status: 'rearranging' });
   } else if (request.action === 'broadcast_prompt') {
     const turnId = generateTurnId();
     handleBroadcast(request.prompt, request.source, sender, turnId);
@@ -436,45 +436,49 @@ async function sendActionToTabs(models, actionType) {
 
 // --- Swap ------------------------------------------------------------------
 
-async function swapTabs(model1, model2) {
+// Re-tile the open managed windows to match `orderedModels` (the selected
+// models, left-to-right). Unlike an adjacent swap, this handles a drag across
+// several positions: it collects the current geometry slots, sorts them
+// left-to-right, and reassigns each model to the slot at its new index.
+async function rearrangeTiles(orderedModels) {
   try {
+    const managedIds = await getManagedWindowIds();
     const allTabs = await chrome.tabs.query({});
-    const tab1 = allTabs.find(t => tabMatchesModel(t, model1));
-    const tab2 = allTabs.find(t => tabMatchesModel(t, model2));
 
-    if (tab1 && tab2) {
-      if (tab1.windowId !== tab2.windowId) {
-        const win1 = await chrome.windows.get(tab1.windowId);
-        const win2 = await chrome.windows.get(tab2.windowId);
-        await chrome.windows.update(win1.id, {
-          state: "normal", left: win2.left, top: win2.top, width: win2.width, height: win2.height
-        });
-        await chrome.windows.update(win2.id, {
-          state: "normal", left: win1.left, top: win1.top, width: win1.width, height: win1.height
-        });
-      } else {
-        const url1 = tab1.url, url2 = tab2.url;
-        await chrome.tabs.update(tab1.id, { url: url2 });
-        await chrome.tabs.update(tab2.id, { url: url1 });
+    // Open managed windows for the requested models, in the requested order.
+    const entries = [];
+    for (const model of orderedModels) {
+      const tab = allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId));
+      if (tab) {
+        const win = await chrome.windows.get(tab.windowId);
+        entries.push({ model, win });
       }
+    }
+    if (entries.length < 2) return;
 
-      // Keep the session's recorded left-to-right order in step with the swap.
-      const session = await getActiveSession();
-      if (session && session.order) {
-        const i1 = session.order.indexOf(model1);
-        const i2 = session.order.indexOf(model2);
-        if (i1 !== -1 && i2 !== -1) {
-          session.order[i1] = model2;
-          session.order[i2] = model1;
-          await writeMeta(session).catch(() => {});
-          await setActiveSession(session);
-        }
-      }
-    } else {
-      console.warn(`Could not find both tabs to swap: ${model1}, ${model2}`);
+    // The physical slots these windows currently occupy, left-to-right.
+    const slots = entries
+      .map(e => ({ left: e.win.left, top: e.win.top, width: e.win.width, height: e.win.height }))
+      .sort((a, b) => a.left - b.left);
+
+    // Assign each model (in the requested order) to the matching slot.
+    for (let i = 0; i < entries.length; i++) {
+      const slot = slots[i];
+      await chrome.windows.update(entries[i].win.id, {
+        state: "normal", left: slot.left, top: slot.top, width: slot.width, height: slot.height
+      });
+    }
+
+    // Keep the session's recorded left-to-right order in step.
+    const session = await getActiveSession();
+    if (session && session.order) {
+      const present = orderedModels.filter(m => session.order.includes(m));
+      session.order = present.concat(session.order.filter(m => !present.includes(m)));
+      await writeMeta(session).catch(() => {});
+      await setActiveSession(session);
     }
   } catch (err) {
-    console.error("Failed to swap tabs/windows:", err);
+    console.error("Failed to rearrange tiles:", err);
   }
 }
 

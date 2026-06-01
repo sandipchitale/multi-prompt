@@ -39,10 +39,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // --- Extension Logic ---
-  const checkboxes = document.querySelectorAll('.ai-checkbox');
+  const chatbotsList = document.getElementById('chatbots-list');
   const errorMsg = document.getElementById('error-msg');
-  const layoutPreviewSection = document.getElementById('layout-preview-section');
-  const layoutPreviewContainer = document.getElementById('layout-preview-container');
   const exportBtn = document.getElementById('export-btn');
   const exportFormat = document.getElementById('export-format');
   const closeTilesBtn = document.getElementById('close-tiles-btn');
@@ -51,100 +49,203 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionDeleteBtn = document.getElementById('session-delete-btn');
   let savedSessions = [];
 
-  // We maintain an ordered array of selected models: e.g. ['gemini', 'claude']
-  let selectedModels = [];
+  const ALL_MODELS = ['gemini', 'claude', 'chatgpt'];
 
   const MODEL_METADATA = {
-    gemini: { name: 'Gemini', color: '#1a73e8' },
-    claude: { name: 'Claude', color: '#d97752' },
-    chatgpt: { name: 'ChatGPT', color: '#10a37f' }
+    gemini: { name: 'Gemini', cardClass: 'gemini-card' },
+    claude: { name: 'Claude', cardClass: 'claude-card' },
+    chatgpt: { name: 'ChatGPT', cardClass: 'chatgpt-card' }
   };
 
-  // Load saved checkbox selections, order, and export format preference
-  chrome.storage.local.get(['selectedModels', 'exportFormatPref'], (result) => {
-    if (result.selectedModels && Array.isArray(result.selectedModels)) {
-      selectedModels = result.selectedModels;
+  // `modelOrder` is the full top-to-bottom order of all cards (= left-to-right
+  // tile order). `selected` holds which of them are actually active/tiled.
+  let modelOrder = ALL_MODELS.slice();
+  let selected = new Set(ALL_MODELS);
+
+  // The ordered list of selected models — this is the tile order that gets
+  // persisted as `selectedModels` for the background script to consume.
+  function getSelectedModels() {
+    return modelOrder.filter(m => selected.has(m));
+  }
+
+  // Load saved selections, order, and export format preference
+  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref'], (result) => {
+    const sel = Array.isArray(result.selectedModels) ? result.selectedModels : ALL_MODELS.slice();
+    selected = new Set(sel);
+
+    if (Array.isArray(result.modelOrder) && ALL_MODELS.every(m => result.modelOrder.includes(m))) {
+      modelOrder = result.modelOrder;
     } else {
-      // Default: select all three in order
-      selectedModels = ['gemini', 'claude', 'chatgpt'];
+      // Derive an order from older installs: selected ones first (in their saved
+      // order), then any remaining models.
+      modelOrder = sel.concat(ALL_MODELS.filter(m => !sel.includes(m)));
     }
-    
-    // Check corresponding checkboxes
-    checkboxes.forEach(cb => {
-      cb.checked = selectedModels.includes(cb.value);
-    });
 
     // Set saved export format preference
     if (exportFormat && result.exportFormatPref) {
       exportFormat.value = result.exportFormatPref;
     }
-    
+
+    renderChatbots();
     updateState();
   });
 
-  function renderLayoutPreview() {
-    layoutPreviewContainer.innerHTML = '';
-    
-    if (selectedModels.length < 2) {
-      layoutPreviewSection.classList.add('hidden');
-      return;
+  // Persist the current order + selection, re-render, and — when windows are
+  // already tiled — physically rearrange them to match the new order.
+  function persistAndRefresh(liveRearrange) {
+    const selectedModels = getSelectedModels();
+    chrome.storage.local.set({ modelOrder, selectedModels }, () => {
+      renderChatbots();
+      updateState();
+      if (liveRearrange && selectedModels.length >= 2) {
+        chrome.storage.session.get(['managedWindowIds'], (res) => {
+          const hasTiles = res.managedWindowIds && res.managedWindowIds.length > 0;
+          if (hasTiles) {
+            chrome.runtime.sendMessage(
+              { action: 'rearrange_tiles', models: selectedModels },
+              () => void chrome.runtime.lastError
+            );
+          }
+        });
+      }
+    });
+  }
+
+  function toggleModel(model) {
+    if (selected.has(model)) {
+      selected.delete(model);
+    } else {
+      selected.add(model);
     }
-    
-    layoutPreviewSection.classList.remove('hidden');
-    
-    selectedModels.forEach((model, index) => {
-      // Add model chip
-      const chip = document.createElement('div');
-      chip.className = 'preview-chip';
-      
+    // Toggling does not move live windows; tiling picks up the change on the
+    // next New Chat / session open.
+    persistAndRefresh(false);
+  }
+
+  // Move `src` to just before/after `tgt` in the order, then live-rearrange.
+  function reorderModel(src, tgt, after) {
+    if (src === tgt) return;
+    const arr = modelOrder.filter(m => m !== src);
+    let idx = arr.indexOf(tgt);
+    if (after) idx += 1;
+    arr.splice(idx, 0, src);
+    modelOrder = arr;
+    persistAndRefresh(true);
+  }
+
+  // Swap two adjacent cards (the swap button sitting between them), then
+  // live-rearrange.
+  function swapAdjacent(i) {
+    if (i < 0 || i + 1 >= modelOrder.length) return;
+    const tmp = modelOrder[i];
+    modelOrder[i] = modelOrder[i + 1];
+    modelOrder[i + 1] = tmp;
+    persistAndRefresh(true);
+  }
+
+  // --- Drag & drop ----------------------------------------------------------
+  let dragModel = null;
+
+  function clearDropMarkers() {
+    chatbotsList.querySelectorAll('.drop-before, .drop-after').forEach(el => {
+      el.classList.remove('drop-before', 'drop-after');
+    });
+  }
+
+  function attachDragHandlers(card) {
+    card.addEventListener('dragstart', (e) => {
+      dragModel = card.dataset.model;
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      // Some browsers require data to be set for the drag to start.
+      try { e.dataTransfer.setData('text/plain', dragModel); } catch (_) {}
+    });
+
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      dragModel = null;
+      clearDropMarkers();
+    });
+
+    card.addEventListener('dragover', (e) => {
+      if (!dragModel || card.dataset.model === dragModel) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      // Cards sit side-by-side, so drop position is decided on the X axis.
+      const rect = card.getBoundingClientRect();
+      const after = (e.clientX - rect.left) > rect.width / 2;
+      clearDropMarkers();
+      card.classList.add(after ? 'drop-after' : 'drop-before');
+    });
+
+    card.addEventListener('dragleave', () => {
+      card.classList.remove('drop-before', 'drop-after');
+    });
+
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const tgt = card.dataset.model;
+      if (!dragModel || tgt === dragModel) return;
+      const rect = card.getBoundingClientRect();
+      const after = (e.clientX - rect.left) > rect.width / 2;
+      reorderModel(dragModel, tgt, after);
+    });
+  }
+
+  function renderChatbots() {
+    chatbotsList.innerHTML = '';
+
+    modelOrder.forEach((model, index) => {
       const meta = MODEL_METADATA[model];
-      chip.innerHTML = `
-        <span class="chip-dot" style="background-color: ${meta.color}"></span>
-        <span>${meta.name}</span>
+      const isSelected = selected.has(model);
+
+      const card = document.createElement('div');
+      card.className = `model-card ${meta.cardClass} ${isSelected ? 'selected' : 'deselected'}`;
+      card.draggable = true;
+      card.dataset.model = model;
+      card.innerHTML = `
+        <div class="card-content">
+          <span class="drag-handle" title="Drag to reorder">
+            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="16" viewBox="0 0 12 16" fill="currentColor">
+              <circle cx="3" cy="3" r="1.5"></circle><circle cx="9" cy="3" r="1.5"></circle>
+              <circle cx="3" cy="8" r="1.5"></circle><circle cx="9" cy="8" r="1.5"></circle>
+              <circle cx="3" cy="13" r="1.5"></circle><circle cx="9" cy="13" r="1.5"></circle>
+            </svg>
+          </span>
+          <span class="model-name">${meta.name}</span>
+          <div class="toggle-indicator"></div>
+        </div>
       `;
-      layoutPreviewContainer.appendChild(chip);
-      
-      // Add swap button between items
-      if (index < selectedModels.length - 1) {
-        const nextModel = selectedModels[index + 1];
-        
+
+      // Click toggles selection (a real drag does not fire a click).
+      card.addEventListener('click', () => toggleModel(model));
+
+      attachDragHandlers(card);
+      chatbotsList.appendChild(card);
+
+      // Swap button between this card and the next one — an alternative to
+      // dragging for changing the left-to-right order.
+      if (index < modelOrder.length - 1) {
+        const nextMeta = MODEL_METADATA[modelOrder[index + 1]];
         const swapBtn = document.createElement('button');
-        swapBtn.className = 'preview-swap-btn';
-        swapBtn.title = `Swap positions of ${meta.name} and ${MODEL_METADATA[nextModel].name}`;
+        swapBtn.className = 'swap-btn';
+        swapBtn.title = `Swap ${meta.name} and ${nextMeta.name}`;
         swapBtn.innerHTML = `
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M17 11h-14M13 7l4 4-4 4M7 13h14M11 17l-4-4 4-4"/>
           </svg>
         `;
-        
-        swapBtn.addEventListener('click', () => {
-          // Perform swap in selectedModels array
-          selectedModels[index] = nextModel;
-          selectedModels[index + 1] = model;
-          
-          chrome.storage.local.set({ selectedModels }, () => {
-            renderLayoutPreview();
-            
-            // Trigger physical window swap on screen!
-            chrome.runtime.sendMessage({
-              action: 'swap_tabs',
-              model1: model,
-              model2: nextModel
-            }, () => {
-              const err = chrome.runtime.lastError;
-            });
-          });
-        });
-        
-        layoutPreviewContainer.appendChild(swapBtn);
+        swapBtn.addEventListener('click', () => swapAdjacent(index));
+        chatbotsList.appendChild(swapBtn);
       }
     });
   }
 
   function updateState() {
     const newChatBtn = document.getElementById('new-chat-btn');
-    
-    if (selectedModels.length === 0) {
+    const hasSelection = getSelectedModels().length > 0;
+
+    if (!hasSelection) {
       errorMsg.classList.remove('hidden');
       newChatBtn.disabled = true;
       if (exportBtn) exportBtn.disabled = true;
@@ -158,8 +259,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const hasTiles = result.managedWindowIds && result.managedWindowIds.length > 0;
       if (closeTilesBtn) closeTilesBtn.disabled = !hasTiles;
     });
-
-    renderLayoutPreview();
   }
 
   // --- Saved Sessions -----------------------------------------------------
@@ -262,27 +361,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  checkboxes.forEach(cb => {
-    cb.addEventListener('change', () => {
-      const model = cb.value;
-      if (cb.checked) {
-        if (!selectedModels.includes(model)) {
-          selectedModels.push(model);
-        }
-      } else {
-        selectedModels = selectedModels.filter(m => m !== model);
-      }
-      
-      chrome.storage.local.set({ selectedModels: selectedModels }, () => {
-        updateState();
-      });
-    });
-  });
-
   // NEW CHAT BUTTON — tiles the selected models if they aren't open yet, then
   // starts a fresh chat in each (and a new saved session).
   const newChatBtn = document.getElementById('new-chat-btn');
   newChatBtn.addEventListener('click', () => {
+    const selectedModels = getSelectedModels();
     if (selectedModels.length > 0) {
       const textSpan = newChatBtn.querySelector('.btn-text');
       const originalText = textSpan.textContent;
@@ -314,6 +397,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // EXPORT CHATS BUTTON
   if (exportBtn) {
     exportBtn.addEventListener('click', () => {
+      const selectedModels = getSelectedModels();
       if (selectedModels.length > 0) {
         const textSpan = exportBtn.querySelector('.btn-text');
         const originalText = textSpan.textContent;

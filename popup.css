@@ -84,18 +84,21 @@ h2 {
 
 .cards-container {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: stretch;
   gap: 8px;
   width: 100%;
 }
 
 .model-card {
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   cursor: pointer;
   border-radius: var(--border-radius);
   background-color: var(--panel-bg);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease,
+    background-color 0.2s ease;
   box-sizing: border-box;
 }
 
@@ -107,42 +110,90 @@ h2 {
   display: none;
 }
 
+/* Side-by-side pills mirror the left-to-right window tiling. Each card keeps
+   its name and toggle switch on a single horizontal line. */
 .card-content {
   display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  position: relative;
+  gap: 8px;
+  padding: 10px 10px;
 }
 
-.model-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+.drag-handle {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.5;
+  display: flex;
+  cursor: grab;
+  line-height: 0;
+}
+
+.model-card:active .drag-handle {
+  cursor: grabbing;
+}
+
+/* Swap button sitting between two adjacent cards. */
+.swap-btn {
+  flex: 0 0 auto;
+  align-self: center;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 0.8rem;
-  color: white;
+  padding: 4px;
+  border-radius: 50%;
+  transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
-.gemini-avatar {
-  background: linear-gradient(135deg, #1a73e8, #8ab4f8);
+.swap-btn:hover {
+  background: rgba(90, 50, 250, 0.15);
+  color: var(--accent);
+  transform: scale(1.1);
 }
-.claude-avatar {
-  background: #d97752;
+
+.swap-btn svg {
+  width: 14px;
+  height: 14px;
 }
-.chatgpt-avatar {
-  background: #10a37f;
-  font-size: 0.7rem;
+
+/* Deselected cards stay in the row (and remain draggable) but read as off. */
+.model-card.deselected {
+  opacity: 0.45;
+}
+
+.model-card.deselected:hover {
+  opacity: 0.7;
+}
+
+.model-card.dragging {
+  opacity: 0.4;
+}
+
+/* Drop indicators for horizontal reordering. */
+.model-card.drop-before {
+  box-shadow: -3px 0 0 0 var(--accent);
+}
+
+.model-card.drop-after {
+  box-shadow: 3px 0 0 0 var(--accent);
 }
 
 .model-name {
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   color: var(--text-main);
   flex-grow: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toggle-indicator {
+  flex-shrink: 0;
 }
 
 .toggle-indicator {
@@ -170,96 +221,22 @@ h2 {
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease;
 }
 
-.model-card input:checked + .card-content .toggle-indicator {
+.model-card.selected .toggle-indicator {
   background-color: var(--accent);
 }
 
-.model-card input:checked + .card-content .toggle-indicator::after {
+.model-card.selected .toggle-indicator::after {
   transform: translateX(14px);
   background-color: white;
 }
 
 .model-card:hover {
   border-color: rgba(90, 50, 250, 0.3);
-  background: rgba(90, 50, 250, 0.03);
 }
 
-.model-card input:checked ~ .card-content {
-  background: rgba(90, 50, 250, 0.05);
-}
-
-.model-card:has(input:checked) {
+.model-card.selected {
   border-color: var(--accent);
   box-shadow: 0 0 10px var(--accent-glow);
-}
-
-.layout-preview-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  background-color: var(--panel-bg);
-  padding: 10px 14px;
-  border-radius: var(--border-radius);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-[data-theme="light"] .layout-preview-section {
-  border: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.layout-preview-container {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  flex-wrap: nowrap;
-}
-
-.preview-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background-color: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 4px 10px;
-  border-radius: 20px;
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-[data-theme="light"] .preview-chip {
-  background-color: rgba(0, 0, 0, 0.03);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.preview-chip .chip-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.preview-swap-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  border-radius: 50%;
-  transition: all 0.2s ease;
-}
-
-.preview-swap-btn:hover {
-  background: rgba(90, 50, 250, 0.15);
-  color: var(--accent);
-  transform: scale(1.1);
-}
-
-.preview-swap-btn svg {
-  width: 12px;
-  height: 12px;
 }
 
 .status-msg {
