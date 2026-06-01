@@ -226,8 +226,121 @@
     tryInject();
   }
 
+  // --- In-page floating button ---------------------------------------------
+  //
+  // When tiled into narrow side-by-side windows, the pinned toolbar action can
+  // get pushed into the overflow menu and disappear. So in windows the extension
+  // manages, we inject a small floating button styled like the extension icon:
+  // it both signals "this chat is part of a Multi-Prompt session" and reopens
+  // the popup (via the background, since content scripts can't open it directly).
+
+  const FAB_POS_KEY = 'mp-fab-pos';
+
+  function readFabPos() {
+    try { return JSON.parse(localStorage.getItem(FAB_POS_KEY) || 'null'); }
+    catch (e) { return null; }
+  }
+
+  function writeFabPos(pos) {
+    try { localStorage.setItem(FAB_POS_KEY, JSON.stringify(pos)); } catch (e) { /* ignore */ }
+  }
+
+  // Ask the background whether this window is extension-managed, retrying a few
+  // times because the managed-window set is written just after the window is
+  // created — the content script can load and ask before it lands.
+  function requestManagedButton(attempt) {
+    attempt = attempt || 0;
+    chrome.runtime.sendMessage({ action: 'query_managed' }, (response) => {
+      const err = chrome.runtime.lastError;
+      if (!err && response && response.managed) {
+        injectManagedButton();
+        return;
+      }
+      if (attempt < 5) setTimeout(() => requestManagedButton(attempt + 1), 1000);
+    });
+  }
+
+  function injectManagedButton() {
+    if (document.getElementById('mp-fab')) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'mp-fab';
+    btn.type = 'button';
+    btn.textContent = 'M';
+    btn.setAttribute('aria-label', 'Open Multi-Prompt panel');
+    btn.title =
+      'Multi-Prompt — this chat is part of a managed split-view session.\n' +
+      'Click to open the Multi-Prompt panel (broadcast a prompt, rearrange or ' +
+      'export the chats, save/open sessions).\n' +
+      'Drag to reposition.';
+    btn.style.cssText = [
+      'position:fixed', 'z-index:2147483647',
+      'width:40px', 'height:40px',
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'font:700 22px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif',
+      'color:#fff', 'border:none', 'border-radius:12px',
+      'background:linear-gradient(135deg,#7c3aed 0%,#d946ef 100%)',
+      'box-shadow:0 4px 14px rgba(0,0,0,.35)',
+      'cursor:pointer', 'opacity:.9', 'user-select:none',
+      'padding:0', 'margin:0',
+      'transition:transform .12s ease,opacity .12s ease'
+    ].join(';') + ';';
+
+    // Restore a saved position, otherwise default to the bottom-right corner.
+    const saved = readFabPos();
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      btn.style.left = saved.left + 'px';
+      btn.style.top = saved.top + 'px';
+      btn.style.right = 'auto';
+      btn.style.bottom = 'auto';
+    } else {
+      btn.style.right = '18px';
+      btn.style.bottom = '18px';
+    }
+
+    let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+    btn.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      dragging = true; moved = false;
+      const r = btn.getBoundingClientRect();
+      sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (!moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      moved = true;
+      const nx = Math.max(0, Math.min(window.innerWidth - btn.offsetWidth, ox + dx));
+      const ny = Math.max(0, Math.min(window.innerHeight - btn.offsetHeight, oy + dy));
+      btn.style.left = nx + 'px'; btn.style.top = ny + 'px';
+      btn.style.right = 'auto'; btn.style.bottom = 'auto';
+    }, true);
+
+    document.addEventListener('mouseup', () => {
+      if (dragging && moved) {
+        writeFabPos({ left: parseInt(btn.style.left, 10), top: parseInt(btn.style.top, 10) });
+      }
+      dragging = false;
+    }, true);
+
+    btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; btn.style.transform = 'scale(1.08)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.opacity = '.9'; btn.style.transform = 'scale(1)'; });
+
+    btn.addEventListener('click', () => {
+      // Swallow the click that ends a drag so a reposition doesn't open the popup.
+      if (moved) { moved = false; return; }
+      chrome.runtime.sendMessage({ action: 'open_popup' }, () => void chrome.runtime.lastError);
+    });
+
+    (document.body || document.documentElement).appendChild(btn);
+  }
+
   function init(config) {
     siteConfig = config;
+    requestManagedButton();
 
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.action === 'inject_prompt') {

@@ -188,8 +188,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ status: 'error', error: err.message || String(err) });
     });
     return true;
+  } else if (request.action === 'query_managed') {
+    // A content script asking whether its window is part of a live Multi-Prompt
+    // session, so it knows whether to show its in-page floating button.
+    isWindowManaged(sender).then(managed => sendResponse({ managed: managed }));
+    return true;
+  } else if (request.action === 'open_popup') {
+    // The in-page floating button forwards its click here: content scripts can't
+    // open the action popup themselves, but the service worker can — and this
+    // works even when the toolbar icon is hidden in the overflow menu (the very
+    // case the floating button exists to cover for narrow tiled windows).
+    openActionPopup(sender);
+    sendResponse({ status: 'ok' });
   }
 });
+
+async function isWindowManaged(sender) {
+  if (!sender || !sender.tab) return false;
+  const ids = await getManagedWindowIds();
+  return ids.has(sender.tab.windowId);
+}
+
+async function openActionPopup(sender) {
+  try {
+    const windowId = sender && sender.tab ? sender.tab.windowId : undefined;
+    await chrome.action.openPopup(windowId ? { windowId: windowId } : {});
+  } catch (e) {
+    console.warn("Could not open action popup:", e);
+  }
+}
 
 // --- Window geometry helpers ----------------------------------------------
 
