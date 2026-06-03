@@ -2,7 +2,11 @@
 
 The Multi-Prompt extension is a productivity tool that tiles Gemini, Claude, and ChatGPT side-by-side on your screen and synchronizes your prompts across all of them.
 
+![Multi-Prompt Popup](screenshots/multi-prompt-popup.png)
+
 Instead of typing prompts inside an extension panel, you type and submit a prompt in **any** of the tiled chatbot windows, and the extension automatically broadcasts and submits that same prompt in all other active chatbot windows.
+
+![Multi-Prompt Tiled](screenshots/multi-prompt.png)
 
 ## Features ✨
 
@@ -11,9 +15,15 @@ Instead of typing prompts inside an extension panel, you type and submit a promp
 - **One-Button "New Chat":** A single button is all you need. If the selected chatbots aren't tiled yet, **New Chat** opens and tiles them side-by-side; if they're already open, it starts a fresh conversation in each. Either way it begins a brand new, automatically-saved session.
 - **Exact Cross-Model Alignment:** Each broadcast is stamped with a shared, hidden **turn id** (a `data-mp-turn` DOM attribute added _after_ the message is sent — never injected into the prompt text the model sees). Export uses these ids to group every model's answer to the same prompt exactly, even when two prompts are textually identical.
 - **Automatic Session Bookmarking:** Every session is auto-saved into a timestamped subfolder under a `"Multi-prompt"` parent folder in Chrome Bookmarks — no manual "bookmark" step. A small bookkeeping bookmark inside each folder stores the window order and the turn-id ledger (it uses the reserved `multi-prompt.invalid` host, so it can never navigate anywhere, and the extension skips it when reopening).
+
+![Multi-Prompt Bookmarks](screenshots/multi-prompt-bookmarks.png)
+
 - **Saved Sessions Picker:** Reopen any saved session from a compact dropdown in the popup. The extension re-tiles the saved conversations in order and **reattaches** the original turn ids, so exported alignment survives a reload. Delete a session (and its bookmark folder) from the same control.
 - **Visual Tiling Order & Drag-to-Reorder:** Select chatbots and arrange their left-to-right window order from one side-by-side row in the popup. Dragging a card to a new position physically slides the open windows on screen to match — without page reloads or losing your chat state.
 - **Export Chat History:** Export conversation history from all active chatbots into Markdown (`.md`) or a clean PDF / print template. The PDF view renders immediately and you invoke **Print / Save as PDF** when ready (no surprise print dialog).
+
+![Multi-Prompt Export](screenshots/multi-prompt-export.png)
+
 - **Close Tiles:** Close all active, extension-managed tiled windows instantly with a single button click.
 - **Selective Syncing:** Only prompts typed inside extension-managed tiled windows are synchronized. Chatbots you open yourself in normal tabs are ignored.
 - **Theme:** Auto / Light / Dark, following the system theme by default.
