@@ -79,15 +79,51 @@ function parseMetaUrl(url) {
   }
 }
 
+// --- Cross-browser capability shims ---------------------------------------
+//
+// Safari Web Extensions don't implement chrome.bookmarks (so the Saved Sessions
+// feature can't work there) and only gained chrome.storage.session in 16.4.
+// Feature-detect both so the core tile/broadcast flow keeps working everywhere,
+// gracefully disabling session persistence instead of throwing.
+
+const BOOKMARKS_AVAILABLE =
+  typeof chrome.bookmarks !== 'undefined' && !!chrome.bookmarks &&
+  typeof chrome.bookmarks.create === 'function';
+
+// A storage.session stand-in for browsers that lack it. It lives only in the
+// service worker's memory, which is acceptable: the data it holds (managed
+// window ids, the active session) is itself only meaningful while those windows
+// are open.
+function createMemorySessionStore() {
+  let data = {};
+  const asList = (keys) => Array.isArray(keys) ? keys : [keys];
+  return {
+    get(keys) {
+      const out = {};
+      for (const k of asList(keys)) if (k in data) out[k] = data[k];
+      return Promise.resolve(out);
+    },
+    set(items) { Object.assign(data, items); return Promise.resolve(); },
+    remove(keys) {
+      for (const k of asList(keys)) delete data[k];
+      return Promise.resolve();
+    }
+  };
+}
+
+const sessionStore = (chrome.storage && chrome.storage.session)
+  ? chrome.storage.session
+  : createMemorySessionStore();
+
 // --- Managed window bookkeeping (storage.session) -------------------------
 
 async function getManagedWindowIds() {
-  const result = await chrome.storage.session.get(['managedWindowIds']);
+  const result = await sessionStore.get(['managedWindowIds']);
   return new Set(result.managedWindowIds || []);
 }
 
 async function setManagedWindowIds(ids) {
-  await chrome.storage.session.set({ managedWindowIds: Array.from(ids) });
+  await sessionStore.set({ managedWindowIds: Array.from(ids) });
 }
 
 async function removeManagedWindowId(windowId) {
@@ -104,16 +140,16 @@ async function removeManagedWindowId(windowId) {
 // thus the windows) restarts.
 
 async function getActiveSession() {
-  const result = await chrome.storage.session.get(['activeSession']);
+  const result = await sessionStore.get(['activeSession']);
   return result.activeSession || null;
 }
 
 async function setActiveSession(session) {
-  await chrome.storage.session.set({ activeSession: session });
+  await sessionStore.set({ activeSession: session });
 }
 
 async function clearActiveSession() {
-  await chrome.storage.session.remove('activeSession');
+  await sessionStore.remove('activeSession');
 }
 
 // Clean up closed windows, and forget the active session once its windows go.
@@ -129,6 +165,7 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
 // Keep a session's per-model bookmark pointed at the live conversation URL as it
 // stabilises, so the saved session resumes the real chat rather than a blank one.
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+  if (!BOOKMARKS_AVAILABLE) return;
   if (!changeInfo.url) return;
   const session = await getActiveSession();
   if (!session || !session.tabs) return;
@@ -241,6 +278,32 @@ async function createWindow(url, geom) {
   });
 }
 
+// Re-apply tile geometry to a set of windows once they all exist. Each
+// windows.create above opens focused, so a later window can shove earlier ones
+// around, and Safari ignores the bounds passed to create and finishes placing a
+// window asynchronously after it loads. A single pass over all the windows —
+// after a short settle delay, repeated once — is far more reliable than trying
+// to position each window as it is created.
+async function tileWindows(orderedWindowIds, screenInfo) {
+  const n = orderedWindowIds.length;
+  const pass = async () => {
+    for (let i = 0; i < n; i++) {
+      try {
+        await chrome.windows.update(orderedWindowIds[i], {
+          state: "normal",
+          ...computeGeom(screenInfo, i, n)
+        });
+      } catch (e) {
+        console.warn("Could not tile window:", e);
+      }
+    }
+  };
+  await new Promise((r) => setTimeout(r, 350));
+  await pass();
+  await new Promise((r) => setTimeout(r, 350));
+  await pass();
+}
+
 // Deliver a message to a content script that may still be initialising, retrying
 // briefly until the listener is registered.
 function sendWhenReady(tabId, message, attempt) {
@@ -301,6 +364,7 @@ function createBookmark(parentId, title, url) {
 
 // Persist the session's order + ledger into its bookkeeping bookmark.
 async function writeMeta(session) {
+  if (!BOOKMARKS_AVAILABLE || !session.folderId) return;
   const url = buildMetaUrl({ v: 1, order: session.order, turns: session.ledger });
   if (session.metaBookmarkId) {
     await new Promise((resolve) => {
@@ -360,11 +424,14 @@ async function handleNewChat(models, screenInfo) {
 // Open a brand new session folder for the conversations now living in the given
 // windows (reused from the previous session), leaving the old folder saved.
 async function rotateSession(session, models) {
-  const parent = await ensureParentFolder();
-  const folder = await createSessionFolder(parent.id);
+  let folder = null;
+  if (BOOKMARKS_AVAILABLE) {
+    const parent = await ensureParentFolder();
+    folder = await createSessionFolder(parent.id);
+  }
 
   const next = {
-    folderId: folder.id,
+    folderId: folder ? folder.id : null,
     metaBookmarkId: null,
     order: models.slice(),
     windows: session.windows,
@@ -373,12 +440,14 @@ async function rotateSession(session, models) {
     ledger: []
   };
 
-  for (const model of models) {
-    const bm = await createBookmark(folder.id, MODEL_TITLES[model], AI_URLS[model]);
-    next.bookmarks[model] = bm.id;
+  if (folder) {
+    for (const model of models) {
+      const bm = await createBookmark(folder.id, MODEL_TITLES[model], AI_URLS[model]);
+      next.bookmarks[model] = bm.id;
+    }
+    await writeMeta(next);
   }
 
-  await writeMeta(next);
   await setActiveSession(next);
 }
 
@@ -400,11 +469,16 @@ async function sessionWindowsMatch(session, models) {
 async function startFreshSession(models, screenInfo) {
   await closeTiledWindows();
 
-  const parent = await ensureParentFolder();
-  const folder = await createSessionFolder(parent.id);
+  // Session persistence rides on the bookmarks API (absent in e.g. Safari); when
+  // it's unavailable we still tile the windows, just without a saved session.
+  let folder = null;
+  if (BOOKMARKS_AVAILABLE) {
+    const parent = await ensureParentFolder();
+    folder = await createSessionFolder(parent.id);
+  }
 
   const session = {
-    folderId: folder.id,
+    folderId: folder ? folder.id : null,
     metaBookmarkId: null,
     order: models.slice(),
     windows: {},
@@ -421,13 +495,17 @@ async function startFreshSession(models, screenInfo) {
     session.windows[model] = win.id;
     session.tabs[model] = tab ? tab.id : null;
     managed.add(win.id);
-    const bm = await createBookmark(folder.id, MODEL_TITLES[model], (tab && tab.url) || AI_URLS[model]);
-    session.bookmarks[model] = bm.id;
+    if (folder) {
+      const bm = await createBookmark(folder.id, MODEL_TITLES[model], (tab && tab.url) || AI_URLS[model]);
+      session.bookmarks[model] = bm.id;
+    }
   }
 
   await setManagedWindowIds(managed);
   await writeMeta(session);
   await setActiveSession(session);
+
+  await tileWindows(models.map((m) => session.windows[m]), screenInfo);
 }
 
 async function closeTiledWindows() {
@@ -574,6 +652,7 @@ async function handleExport(models) {
 // --- Saved sessions (picker) -----------------------------------------------
 
 async function listSessions() {
+  if (!BOOKMARKS_AVAILABLE) return [];
   const parent = await findParentFolder();
   if (!parent) return [];
   const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(parent.id, resolve));
@@ -589,6 +668,7 @@ async function listSessions() {
 }
 
 async function openSession(folderId, screenInfo) {
+  if (!BOOKMARKS_AVAILABLE) throw new Error("Saved sessions are not supported in this browser.");
   const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(folderId, resolve));
   if (!sub || !sub[0]) throw new Error("Session folder not found.");
   const children = sub[0].children || [];
@@ -642,9 +722,12 @@ async function openSession(folderId, screenInfo) {
 
   await setManagedWindowIds(managed);
   await setActiveSession(session);
+
+  await tileWindows(order.map((m) => session.windows[m]), screenInfo);
 }
 
 async function deleteSession(folderId) {
+  if (!BOOKMARKS_AVAILABLE) return;
   await new Promise((resolve, reject) => {
     chrome.bookmarks.removeTree(folderId, () => {
       chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve();

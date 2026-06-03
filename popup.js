@@ -97,7 +97,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set({ modelOrder, selectedModels }, () => {
       renderChatbots();
       updateState();
-      if (liveRearrange && selectedModels.length >= 2) {
+      if (liveRearrange && selectedModels.length >= 2 && chrome.storage.session) {
         chrome.storage.session.get(['managedWindowIds'], (res) => {
           const hasTiles = res.managedWindowIds && res.managedWindowIds.length > 0;
           if (hasTiles) {
@@ -255,10 +255,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (exportBtn) exportBtn.disabled = false;
     }
 
-    chrome.storage.session.get(['managedWindowIds'], (result) => {
-      const hasTiles = result.managedWindowIds && result.managedWindowIds.length > 0;
-      if (closeTilesBtn) closeTilesBtn.disabled = !hasTiles;
-    });
+    if (chrome.storage.session) {
+      chrome.storage.session.get(['managedWindowIds'], (result) => {
+        const hasTiles = result.managedWindowIds && result.managedWindowIds.length > 0;
+        if (closeTilesBtn) closeTilesBtn.disabled = !hasTiles;
+      });
+    } else if (closeTilesBtn) {
+      // No storage.session (e.g. older Safari): can't know tile state — leave the
+      // Close Tiles button enabled so it remains usable.
+      closeTilesBtn.disabled = false;
+    }
   }
 
   // --- Saved Sessions -----------------------------------------------------
