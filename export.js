@@ -65,7 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
           promptEl.className = 'user-prompt-card';
           const parsedPrompt = parseMarkdownToHtml(turn.prompt);
           promptEl.innerHTML = `
-            <div class="message-role">You</div>
+            <h2 class="message-role">You</h2>
             <div class="message-content">${parsedPrompt}</div>
           `;
           groupEl.appendChild(promptEl);
@@ -88,8 +88,8 @@ document.addEventListener('DOMContentLoaded', () => {
           
           cardEl.innerHTML = `
             <div class="response-header">
-              <div class="chatbot-avatar ${meta.avatarClass}">${meta.avatar}</div>
-              <div class="chatbot-name">${meta.name}</div>
+              <div class="chatbot-avatar ${meta.avatarClass}" aria-hidden="true">${meta.avatar}</div>
+              <h3 class="chatbot-name">${meta.name}</h3>
             </div>
             <div class="response-content">${htmlContent}</div>
           `;
