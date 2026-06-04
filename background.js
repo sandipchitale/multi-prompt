@@ -134,10 +134,10 @@ async function removeManagedWindowId(windowId) {
 
 // --- Active session bookkeeping (storage.session) -------------------------
 //
-// The active session links the live tiled windows to their bookmark folder and
-// carries the working copy of the turn-id ledger. The durable copy lives in the
-// session's meta bookmark, so this can safely evaporate when the browser (and
-// thus the windows) restarts.
+// The active session links the live tiled windows to their saved record (id in
+// `folderId`) and carries the working copy of the turn-id ledger. The durable
+// copy lives in the session store, so this can safely evaporate when the browser
+// (and thus the windows) restarts.
 
 async function getActiveSession() {
   const result = await sessionStore.get(['activeSession']);
@@ -162,19 +162,11 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
   }
 });
 
-// Keep a session's per-model bookmark pointed at the live conversation URL as it
-// stabilises, so the saved session resumes the real chat rather than a blank one.
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
-  if (!BOOKMARKS_AVAILABLE) return;
-  if (!changeInfo.url) return;
-  const session = await getActiveSession();
-  if (!session || !session.tabs) return;
-  const model = modelForUrl(changeInfo.url);
-  if (!model || session.tabs[model] !== tabId) return;
-  if (isStableConversationUrl(model, changeInfo.url) && session.bookmarks && session.bookmarks[model]) {
-    chrome.bookmarks.update(session.bookmarks[model], { url: changeInfo.url },
-      () => void chrome.runtime.lastError);
-  }
+// Keep a session's per-model saved URL pointed at the live conversation URL as
+// it stabilises, so the saved session resumes the real chat rather than a blank
+// one. Persisted via whichever session store is active (bookmarks or storage).
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url) captureSessionUrl(changeInfo.url, tabId, tab && tab.windowId);
 });
 
 // --- Message routing ------------------------------------------------------
@@ -235,8 +227,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // open the action popup themselves, but the service worker can — and this
     // works even when the toolbar icon is hidden in the overflow menu (the very
     // case the floating button exists to cover for narrow tiled windows).
-    openActionPopup(sender);
-    sendResponse({ status: 'ok' });
+    openActionPopup(sender).finally(() => sendResponse({ ok: true }));
+    return true;
+  } else if (request.action === 'session_url') {
+    // A chatbot content script reporting its current URL — the reliable way to
+    // learn the conversation permalink after an SPA history navigation, which
+    // tabs.onUpdated doesn't report in Safari.
+    if (sender && sender.tab && request.url) {
+      captureSessionUrl(request.url, sender.tab.id, sender.tab.windowId);
+    }
+    sendResponse({ ok: true });
   }
 });
 
@@ -247,12 +247,46 @@ async function isWindowManaged(sender) {
 }
 
 async function openActionPopup(sender) {
-  try {
-    const windowId = sender && sender.tab ? sender.tab.windowId : undefined;
-    await chrome.action.openPopup(windowId ? { windowId: windowId } : {});
-  } catch (e) {
-    console.warn("Could not open action popup:", e);
+  const windowId = sender && sender.tab ? sender.tab.windowId : undefined;
+  // Safari's action.openPopup anchors to the toolbar of the active window, so
+  // focus the window the button was clicked in first — otherwise it can no-op
+  // for a tiled window that isn't currently frontmost.
+  if (windowId != null) {
+    try { await chrome.windows.update(windowId, { focused: true }); } catch (e) { /* best effort */ }
   }
+  if (chrome.action && typeof chrome.action.openPopup === 'function') {
+    try {
+      await chrome.action.openPopup(windowId != null ? { windowId: windowId } : {});
+      return;
+    } catch (e) {
+      // Safari rejects this for some windows (notably fresh New Chat windows);
+      // fall through to the standalone-window path below.
+      console.warn("action.openPopup failed, falling back to a window:", e);
+    }
+  }
+  await openPopupWindow();
+}
+
+// Open popup.html as a small standalone window, reusing an existing one rather
+// than stacking duplicates.
+async function openPopupWindow() {
+  const url = chrome.runtime.getURL('popup.html');
+  try {
+    const wins = await chrome.windows.getAll({ populate: true });
+    for (const w of wins) {
+      if (w.tabs && w.tabs.some(t => t.url && t.url.split('#')[0] === url)) {
+        await chrome.windows.update(w.id, { focused: true });
+        return;
+      }
+    }
+  } catch (e) { /* fall through to creating a fresh window */ }
+  const win = await chrome.windows.create({
+    url: url, type: "popup", width: 580, height: 720, focused: true
+  });
+  // Safari ignores the size passed to create; re-apply it once the window exists.
+  try {
+    await chrome.windows.update(win.id, { state: "normal", width: 580, height: 720 });
+  } catch (e) { /* best effort */ }
 }
 
 // --- Window geometry helpers ----------------------------------------------
@@ -304,6 +338,41 @@ async function tileWindows(orderedWindowIds, screenInfo) {
   await pass();
 }
 
+// Resolve a freshly created window's first tab. chrome.windows.create returns
+// the tab in `win.tabs` on Chrome, but not reliably on Safari — so fall back to
+// querying the window when it's missing. Without a real tab id, the
+// tabs.onUpdated URL tracker can't match the tab and the saved session never
+// learns the real conversation URL (it stays on the blank launcher).
+async function firstTabOf(win) {
+  const tab = win && win.tabs && win.tabs[0];
+  if (tab) return tab;
+  if (!win || win.id == null) return null;
+  try {
+    const tabs = await chrome.tabs.query({ windowId: win.id });
+    return (tabs && tabs[0]) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Create one tiled window per model (in order) at the URL `urlFor(model)`,
+// returning the window-id and tab-id maps plus the managed-window set. Shared by
+// fresh sessions and reopened ones.
+async function openTiledWindows(order, urlFor, screenInfo) {
+  const windows = {};
+  const tabs = {};
+  const managed = new Set();
+  for (let i = 0; i < order.length; i++) {
+    const model = order[i];
+    const win = await createWindow(urlFor(model), computeGeom(screenInfo, i, order.length));
+    const tab = await firstTabOf(win);
+    windows[model] = win.id;
+    tabs[model] = tab ? tab.id : null;
+    managed.add(win.id);
+  }
+  return { windows: windows, tabs: tabs, managed: managed };
+}
+
 // Deliver a message to a content script that may still be initialising, retrying
 // briefly until the listener is registered.
 function sendWhenReady(tabId, message, attempt) {
@@ -342,13 +411,17 @@ async function ensureParentFolder() {
   });
 }
 
-async function createSessionFolder(parentId) {
+// Human-readable timestamp used in session titles (shared by both stores).
+function sessionTimestamp() {
   const pad = (n) => String(n).padStart(2, '0');
   const now = new Date();
-  const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
-             `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
+         `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+async function createSessionFolder(parentId) {
   return await new Promise((resolve, reject) => {
-    chrome.bookmarks.create({ parentId: parentId, title: `Session - ${ts}` }, (folder) => {
+    chrome.bookmarks.create({ parentId: parentId, title: `Session - ${sessionTimestamp()}` }, (folder) => {
       chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve(folder);
     });
   });
@@ -362,40 +435,263 @@ function createBookmark(parentId, title, url) {
   });
 }
 
-// Persist the session's order + ledger into its bookkeeping bookmark.
-async function writeMeta(session) {
-  if (!BOOKMARKS_AVAILABLE || !session.folderId) return;
-  const url = buildMetaUrl({ v: 1, order: session.order, turns: session.ledger });
-  if (session.metaBookmarkId) {
-    await new Promise((resolve) => {
-      chrome.bookmarks.update(session.metaBookmarkId, { url: url },
-        () => resolve(void chrome.runtime.lastError));
+// --- Session stores --------------------------------------------------------
+//
+// Saved sessions are persisted through one of two interchangeable stores,
+// chosen once at startup by `sessionRepo`:
+//
+//   • bookmarkRepo — the original Chrome behaviour: a "Multi-prompt" bookmark
+//     folder with one sub-folder per session, a bookmark per chatbot, and a
+//     bookkeeping meta bookmark. Visible (and openable) directly in the browser.
+//   • localRepo — a chrome.storage.local fallback for browsers without the
+//     bookmarks API (Safari). Not visible as bookmarks, but still listable,
+//     openable, and deletable from the Multi-Prompt popup.
+//
+// Both expose the same interface and operate on the active-session object, which
+// carries the durable id in `folderId` (a bookmark folder id, or a storage
+// record id) plus any store-specific handles (`bookmarks`, `metaBookmarkId`).
+//
+//   createSession(session, models, urls) — create the durable record; sets
+//       session.folderId (+ store handles).
+//   saveMeta(session)                    — persist order + turn ledger.
+//   setModelUrl(session, model, url)     — update one chatbot's saved URL.
+//   listSessions()                       — [{ folderId, title, models }], newest first.
+//   loadSession(id)                      — { order, turns, urls, bookmarks, metaBookmarkId }.
+//   removeSession(id)                    — delete the durable record.
+
+const bookmarkRepo = {
+  async createSession(session, models, urls) {
+    const parent = await ensureParentFolder();
+    const folder = await createSessionFolder(parent.id);
+    session.folderId = folder.id;
+    session.metaBookmarkId = null;
+    session.bookmarks = {};
+    for (const model of models) {
+      const bm = await createBookmark(folder.id, MODEL_TITLES[model], urls[model] || AI_URLS[model]);
+      session.bookmarks[model] = bm.id;
+    }
+  },
+
+  async saveMeta(session) {
+    if (!session.folderId) return;
+    const url = buildMetaUrl({ v: 1, order: session.order, turns: session.ledger });
+    if (session.metaBookmarkId) {
+      await new Promise((resolve) => {
+        chrome.bookmarks.update(session.metaBookmarkId, { url: url },
+          () => resolve(void chrome.runtime.lastError));
+      });
+    } else {
+      const bm = await createBookmark(session.folderId, META_TITLE, url);
+      session.metaBookmarkId = bm.id;
+    }
+  },
+
+  async setModelUrl(session, model, url) {
+    if (session.bookmarks && session.bookmarks[model]) {
+      await new Promise((resolve) => {
+        chrome.bookmarks.update(session.bookmarks[model], { url: url },
+          () => resolve(void chrome.runtime.lastError));
+      });
+    }
+  },
+
+  async listSessions() {
+    const parent = await findParentFolder();
+    if (!parent) return [];
+    const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(parent.id, resolve));
+    const folders = (sub[0].children || []).filter(c => !c.url);
+    const sessions = folders.map(folder => {
+      const models = (folder.children || [])
+        .filter(c => c.url && !isMetaBookmarkUrl(c.url))
+        .map(c => modelForUrl(c.url))
+        .filter(Boolean);
+      return { folderId: folder.id, title: folder.title, models: models };
     });
-  } else {
-    const bm = await createBookmark(session.folderId, META_TITLE, url);
-    session.metaBookmarkId = bm.id;
+    return sessions.reverse(); // newest first
+  },
+
+  async loadSession(folderId) {
+    const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(folderId, resolve));
+    if (!sub || !sub[0]) throw new Error("Session folder not found.");
+    const children = sub[0].children || [];
+
+    let meta = null;
+    let metaBookmarkId = null;
+    const bookmarks = {};
+    const urls = {};
+    for (const child of children) {
+      if (!child.url) continue;
+      if (isMetaBookmarkUrl(child.url)) {
+        meta = parseMetaUrl(child.url);
+        metaBookmarkId = child.id;
+        continue;
+      }
+      const model = modelForUrl(child.url);
+      if (model) { bookmarks[model] = child.id; urls[model] = child.url; }
+    }
+
+    const order = (meta && Array.isArray(meta.order))
+      ? meta.order.filter(m => urls[m])
+      : Object.keys(urls);
+    const turns = (meta && Array.isArray(meta.turns)) ? meta.turns : [];
+    return { order: order, turns: turns, urls: urls, bookmarks: bookmarks, metaBookmarkId: metaBookmarkId };
+  },
+
+  async removeSession(folderId) {
+    await new Promise((resolve, reject) => {
+      chrome.bookmarks.removeTree(folderId, () => {
+        chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve();
+      });
+    });
   }
+};
+
+// storage.local-backed store. All sessions live under one key as a map keyed by
+// a generated id; each record holds its title, creation time, model order, turn
+// ledger, and the per-model conversation URLs.
+const LOCAL_SESSIONS_KEY = 'mp_savedSessions';
+
+async function localLoadSessions() {
+  const r = await chrome.storage.local.get([LOCAL_SESSIONS_KEY]);
+  return r[LOCAL_SESSIONS_KEY] || {};
 }
 
-// Append one broadcast turn to the active session's ledger and persist it.
+async function localStoreSessions(map) {
+  await chrome.storage.local.set({ [LOCAL_SESSIONS_KEY]: map });
+}
+
+const localRepo = {
+  async createSession(session, models, urls) {
+    const id = 'mp_s_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    const map = await localLoadSessions();
+    map[id] = {
+      id: id,
+      title: `Session - ${sessionTimestamp()}`,
+      createdAt: Date.now(),
+      order: models.slice(),
+      turns: [],
+      urls: { ...urls }
+    };
+    await localStoreSessions(map);
+    session.folderId = id;
+    session.metaBookmarkId = null;
+    session.bookmarks = {};
+  },
+
+  async saveMeta(session) {
+    if (!session.folderId) return;
+    const map = await localLoadSessions();
+    const rec = map[session.folderId];
+    if (!rec) return;
+    rec.order = session.order.slice();
+    rec.turns = session.ledger.slice();
+    await localStoreSessions(map);
+  },
+
+  async setModelUrl(session, model, url) {
+    if (!session.folderId) return;
+    const map = await localLoadSessions();
+    const rec = map[session.folderId];
+    if (!rec) return;
+    rec.urls = rec.urls || {};
+    rec.urls[model] = url;
+    await localStoreSessions(map);
+  },
+
+  async listSessions() {
+    const map = await localLoadSessions();
+    const records = Object.values(map).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return records.map(rec => ({
+      folderId: rec.id,
+      title: rec.title,
+      models: (rec.order && rec.order.length) ? rec.order : Object.keys(rec.urls || {})
+    }));
+  },
+
+  async loadSession(id) {
+    const map = await localLoadSessions();
+    const rec = map[id];
+    if (!rec) throw new Error("Session not found.");
+    const urls = rec.urls || {};
+    const order = ((rec.order && rec.order.length) ? rec.order : Object.keys(urls)).filter(m => urls[m]);
+    return { order: order, turns: rec.turns || [], urls: urls, bookmarks: {}, metaBookmarkId: null };
+  },
+
+  async removeSession(id) {
+    const map = await localLoadSessions();
+    if (map[id]) {
+      delete map[id];
+      await localStoreSessions(map);
+    }
+  }
+};
+
+const sessionRepo = BOOKMARKS_AVAILABLE ? bookmarkRepo : localRepo;
+
+// Persist the active session's durable record on demand. Sessions are saved
+// lazily — only once the user has actually sent a prompt — so empty launcher
+// windows that were tiled but never used don't clutter the saved list. Seeds
+// the record with each model's current tab URL (a launcher at first; the URL
+// trackers upgrade it to the real conversation permalink as it stabilises).
+async function ensureSessionPersisted(session) {
+  if (!session || session.folderId) return false;
+  const urls = {};
+  for (const model of session.order) {
+    let url = AI_URLS[model];
+    const tabId = session.tabs && session.tabs[model];
+    if (tabId != null) {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        if (t && t.url) url = t.url;
+      } catch (e) { /* tab gone; fall back to the launcher URL */ }
+    }
+    urls[model] = url;
+  }
+  await sessionRepo.createSession(session, session.order, urls);
+  return true;
+}
+
+// Append one broadcast turn to the active session's ledger and persist it. The
+// first recorded turn is what promotes a tiled-but-unsaved session into a saved
+// one.
 async function recordLedgerTurn(turnId, prompt) {
   const session = await getActiveSession();
   if (!session) return;
   session.ledger.push({ id: turnId, p: normalizePromptPrefix(prompt) });
   try {
-    await writeMeta(session);
+    await ensureSessionPersisted(session);
+    await sessionRepo.saveMeta(session);
   } catch (e) {
-    console.warn("Could not update session meta bookmark:", e);
+    console.warn("Could not persist session ledger:", e);
   }
   await setActiveSession(session);
+}
+
+// A chatbot's conversation URL has settled (reported by tabs.onUpdated or, where
+// that doesn't fire for SPA history navigations — e.g. Safari — by the content
+// script). Update the saved session's URL for that model, if the URL is a stable
+// permalink, the session is already persisted, and the tab belongs to it.
+async function captureSessionUrl(url, tabId, windowId) {
+  const model = modelForUrl(url);
+  if (!model || !isStableConversationUrl(model, url)) return;
+  const session = await getActiveSession();
+  if (!session || !session.folderId) return;
+  const matchesTab = tabId != null && session.tabs && session.tabs[model] === tabId;
+  const matchesWindow = windowId != null && session.windows && session.windows[model] === windowId;
+  if (!matchesTab && !matchesWindow) return;
+  try {
+    await sessionRepo.setModelUrl(session, model, url);
+  } catch (e) {
+    console.warn("Could not update saved session URL:", e);
+  }
 }
 
 // --- New chat / tiling -----------------------------------------------------
 //
 // "New Chat" is the single entry point: if the selected models are already
 // tiled it re-tiles them and starts a fresh chat in each; otherwise it opens
-// fresh tiled windows (which begin on a blank chat). Either way it rotates to a
-// brand new saved session.
+// fresh tiled windows (which begin on a blank chat). Either way it starts a
+// fresh active session whose durable record is saved lazily on the first prompt.
 
 async function handleNewChat(models, screenInfo) {
   try {
@@ -421,17 +717,12 @@ async function handleNewChat(models, screenInfo) {
   }
 }
 
-// Open a brand new session folder for the conversations now living in the given
-// windows (reused from the previous session), leaving the old folder saved.
+// Start a brand new (unsaved) active session for the conversations now living in
+// the given windows (reused from the previous session), leaving the old session
+// saved. The durable record is created lazily on the first prompt.
 async function rotateSession(session, models) {
-  let folder = null;
-  if (BOOKMARKS_AVAILABLE) {
-    const parent = await ensureParentFolder();
-    folder = await createSessionFolder(parent.id);
-  }
-
   const next = {
-    folderId: folder ? folder.id : null,
+    folderId: null,
     metaBookmarkId: null,
     order: models.slice(),
     windows: session.windows,
@@ -439,15 +730,6 @@ async function rotateSession(session, models) {
     bookmarks: {},
     ledger: []
   };
-
-  if (folder) {
-    for (const model of models) {
-      const bm = await createBookmark(folder.id, MODEL_TITLES[model], AI_URLS[model]);
-      next.bookmarks[model] = bm.id;
-    }
-    await writeMeta(next);
-  }
-
   await setActiveSession(next);
 }
 
@@ -464,48 +746,41 @@ async function sessionWindowsMatch(session, models) {
   return true;
 }
 
-// Open fresh chats for each model, tiled, and auto-create the session bookmark
-// folder that will track them.
+// Open fresh chats for each model, tiled. The active session is set up here but
+// its durable record is created lazily on the first prompt (see
+// ensureSessionPersisted), so tiling without ever typing leaves nothing saved.
 async function startFreshSession(models, screenInfo) {
   await closeTiledWindows();
 
-  // Session persistence rides on the bookmarks API (absent in e.g. Safari); when
-  // it's unavailable we still tile the windows, just without a saved session.
-  let folder = null;
-  if (BOOKMARKS_AVAILABLE) {
-    const parent = await ensureParentFolder();
-    folder = await createSessionFolder(parent.id);
-  }
-
+  const { windows, tabs, managed } = await openTiledWindows(models, (m) => AI_URLS[m], screenInfo);
   const session = {
-    folderId: folder ? folder.id : null,
+    folderId: null,
     metaBookmarkId: null,
     order: models.slice(),
-    windows: {},
-    tabs: {},
+    windows: windows,
+    tabs: tabs,
     bookmarks: {},
     ledger: []
   };
 
-  const managed = new Set();
-  for (let i = 0; i < models.length; i++) {
-    const model = models[i];
-    const win = await createWindow(AI_URLS[model], computeGeom(screenInfo, i, models.length));
-    const tab = win.tabs && win.tabs[0];
-    session.windows[model] = win.id;
-    session.tabs[model] = tab ? tab.id : null;
-    managed.add(win.id);
-    if (folder) {
-      const bm = await createBookmark(folder.id, MODEL_TITLES[model], (tab && tab.url) || AI_URLS[model]);
-      session.bookmarks[model] = bm.id;
-    }
-  }
-
   await setManagedWindowIds(managed);
-  await writeMeta(session);
   await setActiveSession(session);
 
-  await tileWindows(models.map((m) => session.windows[m]), screenInfo);
+  // Proactively show the in-page button in each managed window. Fresh launcher
+  // pages load fast and may have queried query_managed before the ids above were
+  // stored, so don't rely on that poll alone.
+  notifyManagedButtons(session);
+
+  await tileWindows(models.map((m) => windows[m]), screenInfo);
+}
+
+// Tell each of a session's chatbot tabs to show its floating button, retrying
+// until the content script is ready.
+function notifyManagedButtons(session) {
+  for (const model of Object.keys(session.tabs || {})) {
+    const tabId = session.tabs[model];
+    if (tabId != null) sendWhenReady(tabId, { action: 'show_managed_button' });
+  }
 }
 
 async function closeTiledWindows() {
@@ -579,7 +854,7 @@ async function rearrangeTiles(orderedModels) {
     if (session && session.order) {
       const present = orderedModels.filter(m => session.order.includes(m));
       session.order = present.concat(session.order.filter(m => !present.includes(m)));
-      await writeMeta(session).catch(() => {});
+      await sessionRepo.saveMeta(session).catch(() => {});
       await setActiveSession(session);
     }
   } catch (err) {
@@ -600,22 +875,20 @@ async function handleBroadcast(prompt, source, sender, turnId) {
     // Record the turn in the session ledger (covers single-model sessions too).
     recordLedgerTurn(turnId, prompt);
 
-    chrome.storage.local.get(['selectedModels'], async (result) => {
-      const selected = result.selectedModels || ['gemini', 'claude', 'chatgpt'];
-      const targetModels = selected.filter(m => m !== source);
-      const allTabs = await chrome.tabs.query({});
+    const { selectedModels } = await chrome.storage.local.get(['selectedModels']);
+    const targetModels = (selectedModels || ['gemini', 'claude', 'chatgpt']).filter(m => m !== source);
+    const allTabs = await chrome.tabs.query({});
 
-      for (const model of targetModels) {
-        const tab = allTabs.find(t => tabMatchesModel(t, model));
-        if (tab && managedIds.has(tab.windowId)) {
-          chrome.tabs.sendMessage(tab.id, {
-            action: 'inject_prompt',
-            prompt: prompt,
-            turnId: turnId
-          }, () => void chrome.runtime.lastError);
-        }
+    for (const model of targetModels) {
+      const tab = allTabs.find(t => tabMatchesModel(t, model));
+      if (tab && managedIds.has(tab.windowId)) {
+        chrome.tabs.sendMessage(tab.id, {
+          action: 'inject_prompt',
+          prompt: prompt,
+          turnId: turnId
+        }, () => void chrome.runtime.lastError);
       }
-    });
+    }
   } catch (err) {
     console.error("Broadcast failed:", err);
   }
@@ -652,90 +925,50 @@ async function handleExport(models) {
 // --- Saved sessions (picker) -----------------------------------------------
 
 async function listSessions() {
-  if (!BOOKMARKS_AVAILABLE) return [];
-  const parent = await findParentFolder();
-  if (!parent) return [];
-  const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(parent.id, resolve));
-  const folders = (sub[0].children || []).filter(c => !c.url);
-  const sessions = folders.map(folder => {
-    const models = (folder.children || [])
-      .filter(c => c.url && !isMetaBookmarkUrl(c.url))
-      .map(c => modelForUrl(c.url))
-      .filter(Boolean);
-    return { folderId: folder.id, title: folder.title, models: models };
-  });
-  return sessions.reverse(); // newest first
+  return await sessionRepo.listSessions();
 }
 
 async function openSession(folderId, screenInfo) {
-  if (!BOOKMARKS_AVAILABLE) throw new Error("Saved sessions are not supported in this browser.");
-  const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(folderId, resolve));
-  if (!sub || !sub[0]) throw new Error("Session folder not found.");
-  const children = sub[0].children || [];
-
-  let meta = null;
-  let metaBookmarkId = null;
-  const modelBookmarks = {};
-  for (const child of children) {
-    if (!child.url) continue;
-    if (isMetaBookmarkUrl(child.url)) {
-      meta = parseMetaUrl(child.url);
-      metaBookmarkId = child.id;
-      continue;
-    }
-    const model = modelForUrl(child.url);
-    if (model) modelBookmarks[model] = { url: child.url, id: child.id };
-  }
-
-  let order = (meta && Array.isArray(meta.order))
-    ? meta.order.filter(m => modelBookmarks[m])
-    : Object.keys(modelBookmarks);
-  if (order.length === 0) throw new Error("No chatbot bookmarks in this session.");
+  const loaded = await sessionRepo.loadSession(folderId);
+  const order = loaded.order;
+  if (!order || order.length === 0) throw new Error("No chatbots saved in this session.");
 
   await closeTiledWindows();
 
+  const { windows, tabs, managed } = await openTiledWindows(
+    order, (m) => loaded.urls[m] || AI_URLS[m], screenInfo);
   const session = {
     folderId: folderId,
-    metaBookmarkId: metaBookmarkId,
+    metaBookmarkId: loaded.metaBookmarkId || null,
     order: order.slice(),
-    windows: {},
-    tabs: {},
-    bookmarks: {},
-    ledger: (meta && Array.isArray(meta.turns)) ? meta.turns : []
+    windows: windows,
+    tabs: tabs,
+    bookmarks: loaded.bookmarks || {},
+    ledger: Array.isArray(loaded.turns) ? loaded.turns : []
   };
 
-  const managed = new Set();
-  for (let i = 0; i < order.length; i++) {
-    const model = order[i];
-    const win = await createWindow(modelBookmarks[model].url, computeGeom(screenInfo, i, order.length));
-    const tab = win.tabs && win.tabs[0];
-    session.windows[model] = win.id;
-    session.tabs[model] = tab ? tab.id : null;
-    session.bookmarks[model] = modelBookmarks[model].id;
-    managed.add(win.id);
-
-    // Re-stamp the reloaded turns with their original ids so alignment survives.
-    if (tab && session.ledger.length) {
-      sendWhenReady(tab.id, { action: 'reattach_turns', turns: session.ledger });
+  // Re-stamp the reloaded turns with their original ids so alignment survives.
+  if (session.ledger.length) {
+    for (const model of order) {
+      if (tabs[model] != null) {
+        sendWhenReady(tabs[model], { action: 'reattach_turns', turns: session.ledger });
+      }
     }
   }
 
   await setManagedWindowIds(managed);
   await setActiveSession(session);
 
-  await tileWindows(order.map((m) => session.windows[m]), screenInfo);
+  notifyManagedButtons(session);
+
+  await tileWindows(order.map((m) => windows[m]), screenInfo);
 }
 
 async function deleteSession(folderId) {
-  if (!BOOKMARKS_AVAILABLE) return;
-  await new Promise((resolve, reject) => {
-    chrome.bookmarks.removeTree(folderId, () => {
-      chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve();
-    });
-  });
+  await sessionRepo.removeSession(folderId);
   const session = await getActiveSession();
   if (session && session.folderId === folderId) {
-    // The folder is gone; detach it from the live windows (which stay open).
+    // The record is gone; detach it from the live windows (which stay open).
     session.folderId = null;
     session.metaBookmarkId = null;
     session.bookmarks = {};

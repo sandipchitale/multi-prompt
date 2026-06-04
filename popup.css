@@ -470,6 +470,14 @@ h2 {
   color: var(--error);
 }
 
+/* Armed (awaiting a confirming second click) — inline confirmation used instead
+   of a native confirm() dialog, which dismisses the popup in Safari. */
+.session-action.delete.confirming {
+  border-color: var(--error);
+  color: #fff;
+  background: var(--error);
+}
+
 .session-action:disabled {
   opacity: 0.5;
   cursor: default;

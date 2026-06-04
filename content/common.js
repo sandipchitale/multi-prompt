@@ -124,6 +124,27 @@
     );
   }
 
+  // --- Conversation URL reporting ------------------------------------------
+  //
+  // Chatbots are SPAs: after the first prompt they replace the launcher URL with
+  // a conversation permalink via the History API. Chrome surfaces that through
+  // tabs.onUpdated, but Safari does not fire it for history navigations — so we
+  // report our own URL from inside the page, where the change is always visible.
+  // The background persists it onto the active saved session.
+  let lastSentUrl = null;
+
+  function reportUrl() {
+    const url = location.href;
+    if (url === lastSentUrl) return;
+    lastSentUrl = url;
+    chrome.runtime.sendMessage({ action: 'session_url', url: url }, () => void chrome.runtime.lastError);
+  }
+
+  // Force a few re-checks shortly after a submission, when the permalink appears.
+  function scheduleUrlReports() {
+    [1000, 2500, 5000, 9000].forEach((t) => setTimeout(reportUrl, t));
+  }
+
   // Read the current draft text out of an editor (textarea, input or
   // contenteditable) without assuming which kind it is.
   function readPrompt(field) {
@@ -219,6 +240,7 @@
       setTimeout(() => {
         clickSendOrEnter(config, field);
         tagNewUserTurn(turnId, beforeCount);
+        scheduleUrlReports();
         setTimeout(() => { isProgrammaticInput = false; }, 500);
       }, 1000);
     };
@@ -298,6 +320,18 @@
       btn.style.bottom = '18px';
     }
 
+    // Activate the panel. Driven from mouseup (not the click event): on Safari,
+    // calling preventDefault() in mousedown — which we need to stop text
+    // selection while dragging — suppresses the follow-up click, so the click
+    // handler never ran and the button appeared dead.
+    function activatePanel() {
+      btn.textContent = '…';
+      chrome.runtime.sendMessage({ action: 'open_popup' }, () => {
+        void chrome.runtime.lastError;
+        btn.textContent = 'M';
+      });
+    }
+
     let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
 
     btn.addEventListener('mousedown', (e) => {
@@ -305,7 +339,6 @@
       dragging = true; moved = false;
       const r = btn.getBoundingClientRect();
       sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
-      e.preventDefault();
     });
 
     document.addEventListener('mousemove', (e) => {
@@ -313,6 +346,7 @@
       const dx = e.clientX - sx, dy = e.clientY - sy;
       if (!moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
       moved = true;
+      e.preventDefault(); // suppress text selection only once a drag is underway
       const nx = Math.max(0, Math.min(window.innerWidth - btn.offsetWidth, ox + dx));
       const ny = Math.max(0, Math.min(window.innerHeight - btn.offsetHeight, oy + dy));
       btn.style.left = nx + 'px'; btn.style.top = ny + 'px';
@@ -320,20 +354,18 @@
     }, true);
 
     document.addEventListener('mouseup', () => {
-      if (dragging && moved) {
-        writeFabPos({ left: parseInt(btn.style.left, 10), top: parseInt(btn.style.top, 10) });
-      }
+      if (!dragging) return;
       dragging = false;
+      if (moved) {
+        writeFabPos({ left: parseInt(btn.style.left, 10), top: parseInt(btn.style.top, 10) });
+      } else {
+        // A press without a drag is a click — open the panel.
+        activatePanel();
+      }
     }, true);
 
     btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; btn.style.transform = 'scale(1.08)'; });
     btn.addEventListener('mouseleave', () => { btn.style.opacity = '.9'; btn.style.transform = 'scale(1)'; });
-
-    btn.addEventListener('click', () => {
-      // Swallow the click that ends a drag so a reposition doesn't open the popup.
-      if (moved) { moved = false; return; }
-      chrome.runtime.sendMessage({ action: 'open_popup' }, () => void chrome.runtime.lastError);
-    });
 
     (document.body || document.documentElement).appendChild(btn);
   }
@@ -341,6 +373,12 @@
   function init(config) {
     siteConfig = config;
     requestManagedButton();
+
+    // Report our URL now and whenever it changes, so the saved session learns
+    // the real conversation permalink (covers SPA history navigations that
+    // tabs.onUpdated misses in Safari).
+    reportUrl();
+    setInterval(reportUrl, 2000);
 
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.action === 'inject_prompt') {
@@ -355,6 +393,12 @@
         sendResponse({ success: true });
       } else if (request.action === 'reattach_turns') {
         reattachTurns(request.turns);
+        sendResponse({ success: true });
+      } else if (request.action === 'show_managed_button') {
+        // Background telling us this window is part of a managed session — show
+        // the floating button without waiting on the query_managed poll (which
+        // can race window creation for fast-loading launcher pages).
+        injectManagedButton();
         sendResponse({ success: true });
       } else if (request.action === 'extract_chat_history') {
         const history = typeof config.extractHistory === 'function' ? config.extractHistory() : [];
@@ -387,6 +431,7 @@
 
       isProgrammaticInput = true;
       clickSendOrEnter(config, field);
+      scheduleUrlReports();
       setTimeout(() => { isProgrammaticInput = false; }, 500);
     }, true);
 
@@ -402,6 +447,7 @@
 
       const beforeCount = getUserTurnEls().length;
       broadcastPrompt(prompt, config.source, (turnId) => tagNewUserTurn(turnId, beforeCount));
+      scheduleUrlReports();
     };
 
     document.addEventListener('mousedown', handleSendActivation, true);

@@ -350,21 +350,48 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   if (sessionDeleteBtn) {
+    // Inline two-click confirmation. A native confirm() dialog can't be used:
+    // in Safari it dismisses the popover, so the handler never runs past it and
+    // the delete is never sent. Instead the first click arms the button (turns
+    // it red, showing a check) and a second click within a few seconds deletes.
+    let deleteArmed = false;
+    let deleteArmTimer = null;
+
+    const disarmDelete = () => {
+      deleteArmed = false;
+      if (deleteArmTimer) { clearTimeout(deleteArmTimer); deleteArmTimer = null; }
+      sessionDeleteBtn.classList.remove('confirming');
+      sessionDeleteBtn.textContent = '✕';
+      sessionDeleteBtn.title = 'Delete the selected session';
+    };
+
     sessionDeleteBtn.addEventListener('click', () => {
       const folderId = sessionsSelect.value;
       if (!folderId) return;
-      const session = savedSessions.find(s => s.folderId === folderId);
-      const name = session ? session.title : 'this session';
-      if (!confirm(`Delete saved session "${name}"? This removes its bookmark folder.`)) return;
 
+      if (!deleteArmed) {
+        deleteArmed = true;
+        sessionDeleteBtn.classList.add('confirming');
+        sessionDeleteBtn.textContent = '✓';
+        sessionDeleteBtn.title = 'Click again to confirm deletion';
+        deleteArmTimer = setTimeout(disarmDelete, 3000);
+        return;
+      }
+
+      disarmDelete();
       chrome.runtime.sendMessage({ action: 'delete_session', folderId: folderId }, (response) => {
         if (chrome.runtime.lastError || !response || response.status !== 'success') {
-          alert('Could not delete this session.');
+          console.warn('Delete failed:', chrome.runtime.lastError || (response && response.error));
           return;
         }
         loadSessions();
       });
     });
+
+    // Changing the selected session cancels a pending confirmation.
+    if (sessionsSelect) {
+      sessionsSelect.addEventListener('change', disarmDelete);
+    }
   }
 
   // NEW CHAT BUTTON — tiles the selected models if they aren't open yet, then
