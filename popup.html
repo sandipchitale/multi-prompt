@@ -141,10 +141,37 @@
             <span class="btn-text">Open</span>
           </button>
           <button
+            id="session-rename-btn"
+            class="session-action"
+            title="Rename the selected session"
+            disabled
+          >✎</button>
+          <button
             id="session-delete-btn"
             class="session-action delete"
             title="Delete the selected session"
             disabled
+          >✕</button>
+        </div>
+        <div id="session-rename-row" class="sessions-rename-row hidden">
+          <input
+            id="session-rename-input"
+            type="text"
+            class="session-rename-input"
+            placeholder="Session name"
+            maxlength="100"
+          />
+          <button
+            id="session-rename-save"
+            class="glow-button outline mini"
+            title="Save the new name"
+          >
+            <span class="btn-text">Save</span>
+          </button>
+          <button
+            id="session-rename-cancel"
+            class="session-action"
+            title="Cancel renaming"
           >✕</button>
         </div>
       </div>

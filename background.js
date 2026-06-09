@@ -79,6 +79,20 @@ function parseMetaUrl(url) {
   }
 }
 
+// Read and parse a meta bookmark's payload by its bookmark id (used so we can
+// preserve a user-set custom title when rewriting the meta record).
+function getBookmarkMeta(bookmarkId) {
+  return new Promise((resolve) => {
+    chrome.bookmarks.get(bookmarkId, (nodes) => {
+      if (chrome.runtime.lastError || !nodes || !nodes[0] || !nodes[0].url) {
+        resolve(null);
+        return;
+      }
+      resolve(parseMetaUrl(nodes[0].url));
+    });
+  });
+}
+
 // --- Cross-browser capability shims ---------------------------------------
 //
 // Safari Web Extensions don't implement chrome.bookmarks (so the Saved Sessions
@@ -212,6 +226,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.action === 'delete_session') {
     deleteSession(request.folderId).then(() => {
+      sendResponse({ status: 'success' });
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true;
+  } else if (request.action === 'rename_session') {
+    renameSession(request.folderId, request.title).then(() => {
       sendResponse({ status: 'success' });
     }).catch(err => {
       sendResponse({ status: 'error', error: err.message || String(err) });
@@ -474,14 +495,17 @@ const bookmarkRepo = {
 
   async saveMeta(session) {
     if (!session.folderId) return;
-    const url = buildMetaUrl({ v: 1, order: session.order, turns: session.ledger });
+    const data = { v: 1, order: session.order, turns: session.ledger };
     if (session.metaBookmarkId) {
+      // Don't clobber a user-set custom title that lives in the same record.
+      const existing = await getBookmarkMeta(session.metaBookmarkId);
+      if (existing && existing.customTitle) data.customTitle = existing.customTitle;
       await new Promise((resolve) => {
-        chrome.bookmarks.update(session.metaBookmarkId, { url: url },
+        chrome.bookmarks.update(session.metaBookmarkId, { url: buildMetaUrl(data) },
           () => resolve(void chrome.runtime.lastError));
       });
     } else {
-      const bm = await createBookmark(session.folderId, META_TITLE, url);
+      const bm = await createBookmark(session.folderId, META_TITLE, buildMetaUrl(data));
       session.metaBookmarkId = bm.id;
     }
   },
@@ -501,13 +525,36 @@ const bookmarkRepo = {
     const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(parent.id, resolve));
     const folders = (sub[0].children || []).filter(c => !c.url);
     const sessions = folders.map(folder => {
-      const models = (folder.children || [])
+      const children = folder.children || [];
+      const models = children
         .filter(c => c.url && !isMetaBookmarkUrl(c.url))
         .map(c => modelForUrl(c.url))
         .filter(Boolean);
-      return { folderId: folder.id, title: folder.title, models: models };
+      const metaChild = children.find(c => c.url && isMetaBookmarkUrl(c.url));
+      const meta = metaChild ? parseMetaUrl(metaChild.url) : null;
+      const customTitle = (meta && meta.customTitle) ? meta.customTitle : '';
+      return { folderId: folder.id, title: folder.title, models: models, customTitle: customTitle };
     });
     return sessions.reverse(); // newest first
+  },
+
+  async renameSession(folderId, customTitle) {
+    const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(folderId, resolve));
+    if (!sub || !sub[0]) throw new Error("Session folder not found.");
+    const children = sub[0].children || [];
+    const metaChild = children.find(c => c.url && isMetaBookmarkUrl(c.url));
+    if (metaChild) {
+      const data = parseMetaUrl(metaChild.url) || { v: 1, order: [], turns: [] };
+      if (customTitle) data.customTitle = customTitle; else delete data.customTitle;
+      await new Promise((resolve) => {
+        chrome.bookmarks.update(metaChild.id, { url: buildMetaUrl(data) },
+          () => resolve(void chrome.runtime.lastError));
+      });
+    } else if (customTitle) {
+      // No meta record yet — create one carrying just the custom title. The next
+      // saveMeta() fills in order/turns and preserves this title.
+      await createBookmark(folderId, META_TITLE, buildMetaUrl({ v: 1, order: [], turns: [], customTitle: customTitle }));
+    }
   },
 
   async loadSession(folderId) {
@@ -530,7 +577,7 @@ const bookmarkRepo = {
       if (model) { bookmarks[model] = child.id; urls[model] = child.url; }
     }
 
-    const order = (meta && Array.isArray(meta.order))
+    const order = (meta && Array.isArray(meta.order) && meta.order.length)
       ? meta.order.filter(m => urls[m])
       : Object.keys(urls);
     const turns = (meta && Array.isArray(meta.turns)) ? meta.turns : [];
@@ -604,8 +651,17 @@ const localRepo = {
     return records.map(rec => ({
       folderId: rec.id,
       title: rec.title,
-      models: (rec.order && rec.order.length) ? rec.order : Object.keys(rec.urls || {})
+      models: (rec.order && rec.order.length) ? rec.order : Object.keys(rec.urls || {}),
+      customTitle: rec.customTitle || ''
     }));
+  },
+
+  async renameSession(id, customTitle) {
+    const map = await localLoadSessions();
+    const rec = map[id];
+    if (!rec) return;
+    if (customTitle) rec.customTitle = customTitle; else delete rec.customTitle;
+    await localStoreSessions(map);
   },
 
   async loadSession(id) {
@@ -974,4 +1030,11 @@ async function deleteSession(folderId) {
     session.bookmarks = {};
     await setActiveSession(session);
   }
+}
+
+// Set (or clear, when title is empty) a user-friendly display name for a saved
+// session. The original timestamp title is left untouched for internal ordering;
+// this custom name only overrides what the popup shows.
+async function renameSession(folderId, title) {
+  await sessionRepo.renameSession(folderId, (title || '').trim());
 }

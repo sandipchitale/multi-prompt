@@ -47,6 +47,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionsSelect = document.getElementById('sessions-select');
   const sessionOpenBtn = document.getElementById('session-open-btn');
   const sessionDeleteBtn = document.getElementById('session-delete-btn');
+  const sessionRenameBtn = document.getElementById('session-rename-btn');
+  const sessionRenameRow = document.getElementById('session-rename-row');
+  const sessionRenameInput = document.getElementById('session-rename-input');
+  const sessionRenameSave = document.getElementById('session-rename-save');
+  const sessionRenameCancel = document.getElementById('session-rename-cancel');
   let savedSessions = [];
 
   const ALL_MODELS = ['gemini', 'claude', 'chatgpt'];
@@ -290,6 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function populateSessionsSelect() {
+    const prevValue = sessionsSelect.value;
     sessionsSelect.innerHTML = '';
 
     if (savedSessions.length === 0) {
@@ -303,21 +309,60 @@ document.addEventListener('DOMContentLoaded', () => {
       savedSessions.forEach(session => {
         const opt = document.createElement('option');
         opt.value = session.folderId;
-        const label = session.title.replace(/^Session - /, '');
-        const models = session.models
-          .map(m => (MODEL_METADATA[m] ? MODEL_METADATA[m].name : m))
-          .join(' / ');
-        opt.textContent = models ? `${label} — ${models}` : label;
+        opt.textContent = sessionDisplayLabel(session);
+        // Always carry the original timestamp + model order as a tooltip so it's
+        // recoverable even once a custom display name hides it.
+        opt.title = sessionOriginalLabel(session);
         sessionsSelect.appendChild(opt);
       });
+      // Keep the same session selected across a repopulate (e.g. after a rename)
+      // rather than snapping back to the newest entry.
+      if (prevValue && savedSessions.some(s => s.folderId === prevValue)) {
+        sessionsSelect.value = prevValue;
+      }
     }
     updateSessionButtons();
+  }
+
+  // The editable part of a session's name: the user's custom title if set,
+  // otherwise the original timestamp-based title (kept for internal ordering).
+  function sessionBaseLabel(session) {
+    return session.customTitle || session.title.replace(/^Session - /, '');
+  }
+
+  // The original auto-generated label: timestamp title + model order. Used for
+  // the tooltip so it stays visible even when a custom name is shown instead.
+  function sessionOriginalLabel(session) {
+    const base = session.title.replace(/^Session - /, '');
+    const models = session.models
+      .map(m => (MODEL_METADATA[m] ? MODEL_METADATA[m].name : m))
+      .join(' / ');
+    return models ? `${base} — ${models}` : base;
+  }
+
+  // What the dropdown shows. A user-set custom name is shown on its own; the
+  // default (timestamp) entry appends the list of models for context.
+  function sessionDisplayLabel(session) {
+    if (session.customTitle) return session.customTitle;
+    return sessionOriginalLabel(session);
   }
 
   function updateSessionButtons() {
     const hasSelection = !!(sessionsSelect && sessionsSelect.value);
     if (sessionOpenBtn) sessionOpenBtn.disabled = !hasSelection;
     if (sessionDeleteBtn) sessionDeleteBtn.disabled = !hasSelection;
+    if (sessionRenameBtn) sessionRenameBtn.disabled = !hasSelection;
+    updateSessionsSelectTooltip();
+  }
+
+  // Reflect the selected session's original timestamp + model order on the
+  // select itself, so the info is reachable even when a custom name hides it.
+  function updateSessionsSelectTooltip() {
+    if (!sessionsSelect) return;
+    const session = savedSessions.find(s => s.folderId === sessionsSelect.value);
+    sessionsSelect.title = (session && session.customTitle)
+      ? `Saved ${sessionOriginalLabel(session)}`
+      : 'Choose a saved session';
   }
 
   if (sessionsSelect) {
@@ -391,6 +436,66 @@ document.addEventListener('DOMContentLoaded', () => {
     // Changing the selected session cancels a pending confirmation.
     if (sessionsSelect) {
       sessionsSelect.addEventListener('change', disarmDelete);
+    }
+  }
+
+  // --- Rename a saved session ---------------------------------------------
+  // Inline editing (no prompt()/confirm(), which dismiss the popup in Safari):
+  // the pencil button reveals a text field pre-filled with the current name.
+  if (sessionRenameBtn && sessionRenameRow && sessionRenameInput) {
+    const showRenameRow = () => {
+      const folderId = sessionsSelect.value;
+      if (!folderId) return;
+      const session = savedSessions.find(s => s.folderId === folderId);
+      if (!session) return;
+      sessionRenameInput.value = sessionBaseLabel(session);
+      sessionRenameRow.classList.remove('hidden');
+      sessionRenameInput.focus();
+      sessionRenameInput.select();
+    };
+
+    const hideRenameRow = () => {
+      sessionRenameRow.classList.add('hidden');
+      sessionRenameInput.value = '';
+    };
+
+    const commitRename = () => {
+      const folderId = sessionsSelect.value;
+      if (!folderId) { hideRenameRow(); return; }
+      const title = sessionRenameInput.value.trim();
+      chrome.runtime.sendMessage(
+        { action: 'rename_session', folderId: folderId, title: title },
+        (response) => {
+          if (chrome.runtime.lastError || !response || response.status !== 'success') {
+            console.warn('Rename failed:', chrome.runtime.lastError || (response && response.error));
+            return;
+          }
+          hideRenameRow();
+          loadSessions();
+        }
+      );
+    };
+
+    sessionRenameBtn.addEventListener('click', () => {
+      if (sessionRenameRow.classList.contains('hidden')) {
+        showRenameRow();
+      } else {
+        hideRenameRow();
+      }
+    });
+
+    if (sessionRenameSave) sessionRenameSave.addEventListener('click', commitRename);
+    if (sessionRenameCancel) sessionRenameCancel.addEventListener('click', hideRenameRow);
+
+    sessionRenameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+      else if (e.key === 'Escape') { e.preventDefault(); hideRenameRow(); }
+    });
+
+    // Switching sessions cancels an in-progress rename so the field can't be
+    // saved against the wrong record.
+    if (sessionsSelect) {
+      sessionsSelect.addEventListener('change', hideRenameRow);
     }
   }
 
