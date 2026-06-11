@@ -45,7 +45,7 @@ The chatbot sites forbid being embedded in a frame (via `X-Frame-Options` and CS
 Notes and limitations:
 
 - **Sign in first.** Logging in (and some session refreshes) can't happen inside an embedded frame; sign in to each chatbot in a normal tab beforehand. The panes then share that session.
-- **Chrome only.** Safari does not support `declarativeNetRequest` header modification, so Tiled in a Tab is Chrome-only; Tiled Windows remains the Safari path.
+- **Chrome only.** Safari's `declarativeNetRequest` cannot remove *response* headers at all ([WebKit bug 275158](https://webkit.org/b/275158)), so Tiled in a Tab cannot work there; the extension probes for this at open time and explains, rather than showing dead panes. Tiled Windows remains the Safari path. Browsers that can remove response headers but lack per-tab (`tabIds`) rule scoping, such as Firefox, fall back to a rule that applies browser-wide — but still only while a workspace tab is open.
 - **Security trade-off.** Removing the CSP also drops the framed page's own in-frame XSS protections. The rule is session-only, sub-frame-only, and pinned to the workspace tab to keep this contained.
 
 ### Durable sessions

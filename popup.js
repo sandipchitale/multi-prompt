@@ -55,6 +55,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionRenameCancel = document.getElementById('session-rename-cancel');
   let savedSessions = [];
 
+  // Tiled in a Tab cannot work on Safari (its declarativeNetRequest cannot
+  // remove the X-Frame-Options/CSP response headers the iframes need stripped),
+  // so hide its UI there entirely rather than offering buttons that only alert.
+  // Inline styles, so no shared CSS changes that could touch other browsers.
+  if (location.protocol === 'safari-web-extension:') {
+    const workspaceButton = document.getElementById('workspace-btn');
+    if (workspaceButton) {
+      // The button sits alone in its own .button-row; hide the whole row so no
+      // empty gap remains.
+      (workspaceButton.closest('.button-row') || workspaceButton).style.display = 'none';
+    }
+    if (sessionOpenWorkspaceBtn) sessionOpenWorkspaceBtn.style.display = 'none';
+  }
+
   const ALL_MODELS = ['gemini', 'claude', 'chatgpt'];
 
   const MODEL_METADATA = {

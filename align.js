@@ -170,15 +170,20 @@ function deliverExport(history, format) {
   }
 }
 
-// Trigger a browser download of an in-memory string.
+// Trigger a browser download of an in-memory string. Safari cannot resolve
+// blob: URLs minted by extension pages (it navigates to the blob and dies with
+// "WebKitBlobResource error 1"), so there the content travels inline in a
+// data: URL instead; everywhere else a blob avoids the URL-length encoding.
 function downloadFile(content, filename, contentType) {
-  const blob = new Blob([content], { type: contentType });
-  const url = URL.createObjectURL(blob);
+  const isSafariExtensionPage = location.protocol === 'safari-web-extension:';
+  const url = isSafariExtensionPage
+    ? 'data:' + contentType + ';charset=utf-8,' + encodeURIComponent(content)
+    : URL.createObjectURL(new Blob([content], { type: contentType }));
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  if (!isSafariExtensionPage) URL.revokeObjectURL(url);
 }

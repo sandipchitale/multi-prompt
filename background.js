@@ -6,6 +6,12 @@ const AI_URLS = {
 
 const MODEL_TITLES = { gemini: "Gemini", claude: "Claude", chatgpt: "ChatGPT" };
 
+// True under Safari's web-extension runtime (its pages and background all live
+// on the safari-web-extension: scheme). Used to keep Safari-only workarounds
+// off the Chrome code paths entirely.
+const IS_SAFARI_EXTENSION =
+  typeof location !== 'undefined' && location.protocol === 'safari-web-extension:';
+
 // "Bogus" bookkeeping bookmark used to persist per-session metadata (model
 // order + the turn-id ledger) inside the session folder. It uses the reserved
 // `.invalid` TLD so it can never accidentally navigate anywhere, and the
@@ -1142,8 +1148,15 @@ async function handleExport(models) {
       results[model] = await extractHistory(frame.tabId, frame.frameId);
       continue;
     }
-    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedWindowIds.has(t.windowId));
-    results[model] = tab ? await extractHistory(tab.id) : [];
+    // Safari only (Chrome's behaviour is untouched): fall back to any open
+    // chatbot tab when the managed-window lookup misses — Safari's window
+    // bookkeeping is less reliable (window reopened by hand, background
+    // restarted with the in-memory storage.session shim, …) and previously
+    // that model was silently exported empty. frameId 0 pins extraction to the
+    // top-level page so a same-host subframe can never answer first with [].
+    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedWindowIds.has(t.windowId)) ||
+                (IS_SAFARI_EXTENSION ? allTabs.find(t => tabMatchesModel(t, model)) : null);
+    results[model] = tab ? await extractHistory(tab.id, IS_SAFARI_EXTENSION ? 0 : undefined) : [];
   }
   return results;
 }
@@ -1243,10 +1256,88 @@ async function renameSession(folderId, title) {
 // inside the panes. Acceptable for this experiment; revisit before shipping.
 
 const WORKSPACE_RULE_ID = 7001;
+const WORKSPACE_PROBE_RULE_ID = 7002;
 const WORKSPACE_DOMAINS = [
   'gemini.google.com', 'claude.ai', 'chatgpt.com',
   'accounts.google.com', 'a.claude.ai'
 ];
+
+// What this browser's declarativeNetRequest can actually do for the workspace:
+//   'tab-scoped' — response-header removal with per-tab (tabIds) scoping: Chrome.
+//   'global'     — header removal works but only browser-wide (Firefox has no
+//                  tabIds condition); the rule still exists only while at least
+//                  one workspace tab is open, so exposure stays bounded.
+//   'none'       — response headers cannot be removed at all (Safari,
+//                  https://webkit.org/b/275158): the workspace cannot work.
+// Detected once per service-worker life by installing a throwaway session rule
+// against a non-routable probe domain and reading it back — reading back
+// catches browsers that silently drop the unsupported parts instead of
+// rejecting the rule.
+let workspaceRuleSupport = null;
+
+function workspaceProbeRule(withTabIds) {
+  const rule = {
+    id: WORKSPACE_PROBE_RULE_ID,
+    priority: 1,
+    action: {
+      type: 'modifyHeaders',
+      responseHeaders: [
+        { header: 'x-frame-options', operation: 'remove' },
+        { header: 'content-security-policy', operation: 'remove' }
+      ]
+    },
+    condition: {
+      requestDomains: ['multi-prompt-capability-probe.invalid'],
+      resourceTypes: ['sub_frame']
+    }
+  };
+  if (withTabIds) rule.condition.tabIds = [999999999];
+  return rule;
+}
+
+async function probeRuleSticks(withTabIds) {
+  const dnr = chrome.declarativeNetRequest;
+  await dnr.updateSessionRules({
+    removeRuleIds: [WORKSPACE_PROBE_RULE_ID],
+    addRules: [workspaceProbeRule(withTabIds)]
+  });
+  const rules = await dnr.getSessionRules();
+  const rule = rules.find(r => r.id === WORKSPACE_PROBE_RULE_ID);
+  return !!(rule &&
+    rule.action && Array.isArray(rule.action.responseHeaders) &&
+    rule.action.responseHeaders.length === 2 &&
+    (!withTabIds || (rule.condition && Array.isArray(rule.condition.tabIds))));
+}
+
+async function detectWorkspaceRuleSupport() {
+  if (workspaceRuleSupport) return workspaceRuleSupport;
+  const dnr = chrome.declarativeNetRequest;
+  if (!dnr || typeof dnr.updateSessionRules !== 'function' ||
+      typeof dnr.getSessionRules !== 'function') {
+    workspaceRuleSupport = 'none';
+    return workspaceRuleSupport;
+  }
+  // Chromium implements the full surface (tab-scoped session rules with
+  // response-header removal), so skip the probe there entirely — Chrome's
+  // behaviour and session-rule state stay exactly as they always were.
+  if (typeof location !== 'undefined' && location.protocol === 'chrome-extension:') {
+    workspaceRuleSupport = 'tab-scoped';
+    return workspaceRuleSupport;
+  }
+  try {
+    workspaceRuleSupport = (await probeRuleSticks(true)) ? 'tab-scoped' : 'none';
+  } catch (e) {
+    try {
+      workspaceRuleSupport = (await probeRuleSticks(false)) ? 'global' : 'none';
+    } catch (e2) {
+      workspaceRuleSupport = 'none';
+    }
+  }
+  try {
+    await dnr.updateSessionRules({ removeRuleIds: [WORKSPACE_PROBE_RULE_ID] });
+  } catch (e) { /* probe rule never installed */ }
+  return workspaceRuleSupport;
+}
 
 // Workspaces are keyed by their tab id, so any number can be open at once —
 // each a tab of iframes with its own shared prompt box that broadcasts only to
@@ -1288,6 +1379,13 @@ async function syncWorkspaceRules() {
     } catch (e) { /* rule already gone */ }
     return;
   }
+  const support = await detectWorkspaceRuleSupport();
+  if (support === 'none') return; // openWorkspace already refused; nothing to install
+  const condition = {
+    requestDomains: WORKSPACE_DOMAINS,
+    resourceTypes: ['sub_frame']
+  };
+  if (support === 'tab-scoped') condition.tabIds = tabIds;
   await chrome.declarativeNetRequest.updateSessionRules({
     removeRuleIds: [WORKSPACE_RULE_ID],
     addRules: [{
@@ -1300,22 +1398,23 @@ async function syncWorkspaceRules() {
           { header: 'content-security-policy', operation: 'remove' }
         ]
       },
-      condition: {
-        requestDomains: WORKSPACE_DOMAINS,
-        resourceTypes: ['sub_frame'],
-        tabIds: tabIds
-      }
+      condition: condition
     }]
   });
 }
+
+const WORKSPACE_UNSUPPORTED_MESSAGE =
+  'This browser cannot remove the response headers (X-Frame-Options / ' +
+  'Content-Security-Policy) that block embedding the chatbots in iframes — ' +
+  'Safari does not support this — so Tiled in a Tab is unavailable here. ' +
+  'Use the regular tiled-windows mode instead.';
 
 // Open a NEW workspace tab. `folderId` is a saved session to reopen, or null
 // for a fresh chat; it travels in the URL hash so each tab is self-describing
 // (no shared "pending target" to race when several are opened at once).
 async function openWorkspace(folderId) {
-  if (!chrome.declarativeNetRequest ||
-      typeof chrome.declarativeNetRequest.updateSessionRules !== 'function') {
-    throw new Error('This browser does not support the header rules the workspace needs.');
+  if ((await detectWorkspaceRuleSupport()) === 'none') {
+    throw new Error(WORKSPACE_UNSUPPORTED_MESSAGE);
   }
   const hash = folderId ? '#session=' + encodeURIComponent(folderId) : '';
   await chrome.tabs.create({ url: chrome.runtime.getURL('workspace.html') + hash });
@@ -1328,6 +1427,12 @@ async function openWorkspace(folderId) {
 // conversation URLs and carries its turn ledger for re-stamping.
 async function initWorkspace(sender, folderId) {
   if (!sender || !sender.tab) throw new Error('Workspace tab not identified.');
+  // Re-checked here (openWorkspace already refused) so a workspace.html opened
+  // or reloaded directly in an unsupported browser shows the notice instead of
+  // a row of dead iframes.
+  if ((await detectWorkspaceRuleSupport()) === 'none') {
+    throw new Error(WORKSPACE_UNSUPPORTED_MESSAGE);
+  }
   const tabId = sender.tab.id;
 
   let order, urls, turns = [];
