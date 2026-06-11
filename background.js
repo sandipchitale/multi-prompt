@@ -67,8 +67,56 @@ function isMetaBookmarkUrl(url) {
   try { return new URL(url).hostname === META_HOST; } catch (e) { return false; }
 }
 
-function buildMetaUrl(data) {
+// Bookmark URLs have practical length limits (and sync caps below the raw URL
+// max), so the session ledger is spread across as many bookkeeping bookmarks as
+// it needs — a primary (seq 0, carrying order + custom title) plus sequenced
+// continuations (-02, -03, …). Each holds a chunk of turns small enough to keep
+// its URL under META_URL_MAX. All share the reserved META_HOST and carry their
+// `seq` in the payload, so readers just gather every meta bookmark in the
+// folder, sort by seq, and concatenate the turns.
+const META_URL_MAX = 7000;
+
+function encodeMetaUrl(data) {
   return META_URL_PREFIX + encodeURIComponent(JSON.stringify(data));
+}
+
+// Single-bookmark encode with a last-resort fallback (drop prompt prefixes,
+// keeping ids — all alignment needs) for the rare write that isn't chunked.
+function buildMetaUrl(data) {
+  let url = encodeMetaUrl(data);
+  if (url.length > META_URL_MAX && Array.isArray(data.turns) && data.turns.length) {
+    url = encodeMetaUrl({ ...data, turns: data.turns.map(t => ({ id: t.id })) });
+  }
+  return url;
+}
+
+// Split a session's order + custom title + turn ledger into a list of meta
+// payloads, each whose encoded URL stays under META_URL_MAX. Always returns at
+// least one payload (the primary), even for an empty ledger.
+function chunkSessionMeta(order, customTitle, turns) {
+  turns = Array.isArray(turns) ? turns : [];
+  const payloads = [];
+  let idx = 0;
+  let seq = 0;
+  do {
+    const base = seq === 0 ? { v: 1, seq: 0, order: order || [] } : { v: 1, seq: seq };
+    if (seq === 0 && customTitle) base.customTitle = customTitle;
+    base.turns = [];
+    while (idx < turns.length) {
+      const candidate = base.turns.concat([turns[idx]]);
+      // Accept the turn if it fits, or if this chunk is still empty (guarantees
+      // forward progress even for a pathologically large single turn).
+      if (base.turns.length >= 1 &&
+          encodeMetaUrl({ ...base, turns: candidate }).length > META_URL_MAX) {
+        break;
+      }
+      base.turns = candidate;
+      idx++;
+    }
+    payloads.push(base);
+    seq++;
+  } while (idx < turns.length);
+  return payloads;
 }
 
 function parseMetaUrl(url) {
@@ -77,20 +125,6 @@ function parseMetaUrl(url) {
   } catch (e) {
     return null;
   }
-}
-
-// Read and parse a meta bookmark's payload by its bookmark id (used so we can
-// preserve a user-set custom title when rewriting the meta record).
-function getBookmarkMeta(bookmarkId) {
-  return new Promise((resolve) => {
-    chrome.bookmarks.get(bookmarkId, (nodes) => {
-      if (chrome.runtime.lastError || !nodes || !nodes[0] || !nodes[0].url) {
-        resolve(null);
-        return;
-      }
-      resolve(parseMetaUrl(nodes[0].url));
-    });
-  });
 }
 
 // --- Cross-browser capability shims ---------------------------------------
@@ -250,12 +284,66 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // case the floating button exists to cover for narrow tiled windows).
     openActionPopup(sender).finally(() => sendResponse({ ok: true }));
     return true;
+  } else if (request.action === 'open_workspace') {
+    openWorkspace(request.folderId || null).then(() => {
+      sendResponse({ status: 'success' });
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true;
+  } else if (request.action === 'workspace_init') {
+    // The workspace page is loaded and asking for its pane list. Register its
+    // tab and extend the header-stripping rule to it before answering, so the
+    // iframes are only created once framing is actually permitted (no race).
+    initWorkspace(sender, request.folderId || null).then(result => {
+      sendResponse({ status: 'success', order: result.order, urls: result.urls });
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true;
+  } else if (request.action === 'workspace_inject_result') {
+    // A pane (content script) reporting whether its injected prompt rendered.
+    // Forward only to its own workspace tab's prompt bar.
+    forwardPaneResult(request.model, !!request.ok, sender).finally(() => sendResponse({ ok: true }));
+    return true;
+  } else if (request.action === 'workspace_hello') {
+    // A content script running inside a workspace iframe reporting which model
+    // its frame hosts, so the shared prompt box can target it by frameId. The
+    // response may carry a conversation URL to steer a freshly reloaded pane
+    // back to (a frame reload reverts to the blank launcher src).
+    registerWorkspaceFrame(request.model, sender)
+      .then(result => sendResponse({ ok: true, navigate: (result && result.navigate) || null }))
+      .catch(() => sendResponse({ ok: true, navigate: null }));
+    return true;
+  } else if (request.action === 'workspace_status') {
+    // A workspace page polling which of ITS panes are currently registered, for
+    // its per-pane connection indicators.
+    getWorkspaceForTab(sender && sender.tab && sender.tab.id).then(entry => {
+      sendResponse({ status: 'success', models: entry ? Object.keys(entry.frames || {}) : [] });
+    }).catch(() => sendResponse({ status: 'success', models: [] }));
+    return true;
+  } else if (request.action === 'workspace_broadcast') {
+    handleWorkspaceBroadcast(request.prompt, sender).then(result => {
+      sendResponse(result);
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true;
+  } else if (request.action === 'export_workspace') {
+    // Export the chats of the panes in the requesting workspace tab.
+    exportWorkspaceTab(sender).then(history => {
+      sendResponse({ status: 'success', history: history });
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
+    return true;
   } else if (request.action === 'session_url') {
     // A chatbot content script reporting its current URL — the reliable way to
     // learn the conversation permalink after an SPA history navigation, which
     // tabs.onUpdated doesn't report in Safari.
     if (sender && sender.tab && request.url) {
       captureSessionUrl(request.url, sender.tab.id, sender.tab.windowId);
+      captureWorkspaceUrl(request.url, sender);
     }
     sendResponse({ ok: true });
   }
@@ -302,11 +390,11 @@ async function openPopupWindow() {
     }
   } catch (e) { /* fall through to creating a fresh window */ }
   const win = await chrome.windows.create({
-    url: url, type: "popup", width: 580, height: 720, focused: true
+    url: url, type: "popup", width: 800, height: 720, focused: true
   });
   // Safari ignores the size passed to create; re-apply it once the window exists.
   try {
-    await chrome.windows.update(win.id, { state: "normal", width: 580, height: 720 });
+    await chrome.windows.update(win.id, { state: "normal", width: 800, height: 720 });
   } catch (e) { /* best effort */ }
 }
 
@@ -456,6 +544,47 @@ function createBookmark(parentId, title, url) {
   });
 }
 
+function updateBookmarkUrl(id, url) {
+  return new Promise((resolve) => {
+    chrome.bookmarks.update(id, { url: url }, () => resolve(void chrome.runtime.lastError));
+  });
+}
+
+function removeBookmarkNode(id) {
+  return new Promise((resolve) => {
+    chrome.bookmarks.remove(id, () => resolve(void chrome.runtime.lastError));
+  });
+}
+
+function getSubTree(id) {
+  return new Promise((resolve) => chrome.bookmarks.getSubTree(id, (r) => resolve(r)));
+}
+
+// All bookkeeping (meta) bookmarks in a folder, parsed and ordered by seq.
+function collectMetaBookmarks(children) {
+  return (children || [])
+    .filter(c => c.url && isMetaBookmarkUrl(c.url))
+    .map(c => ({ id: c.id, data: parseMetaUrl(c.url) || {} }))
+    .sort((a, b) => (a.data.seq || 0) - (b.data.seq || 0));
+}
+
+// Merge a session's sequenced meta bookmarks back into one record: order and
+// custom title come from the primary (seq 0); turns are concatenated in seq
+// order.
+function mergeMeta(metas) {
+  let order = null, customTitle = '', turns = [];
+  for (const m of metas) {
+    if (!order && Array.isArray(m.data.order) && m.data.order.length) order = m.data.order;
+    if (!customTitle && m.data.customTitle) customTitle = m.data.customTitle;
+    if (Array.isArray(m.data.turns)) turns = turns.concat(m.data.turns);
+  }
+  return { order: order, customTitle: customTitle, turns: turns };
+}
+
+function metaTitleForSeq(seq) {
+  return seq === 0 ? META_TITLE : `${META_TITLE} -${String(seq + 1).padStart(2, '0')}`;
+}
+
 // --- Session stores --------------------------------------------------------
 //
 // Saved sessions are persisted through one of two interchangeable stores,
@@ -495,19 +624,29 @@ const bookmarkRepo = {
 
   async saveMeta(session) {
     if (!session.folderId) return;
-    const data = { v: 1, order: session.order, turns: session.ledger };
-    if (session.metaBookmarkId) {
-      // Don't clobber a user-set custom title that lives in the same record.
-      const existing = await getBookmarkMeta(session.metaBookmarkId);
-      if (existing && existing.customTitle) data.customTitle = existing.customTitle;
-      await new Promise((resolve) => {
-        chrome.bookmarks.update(session.metaBookmarkId, { url: buildMetaUrl(data) },
-          () => resolve(void chrome.runtime.lastError));
-      });
-    } else {
-      const bm = await createBookmark(session.folderId, META_TITLE, buildMetaUrl(data));
-      session.metaBookmarkId = bm.id;
+    const sub = await getSubTree(session.folderId);
+    if (!sub || !sub[0]) return;
+    const metas = collectMetaBookmarks(sub[0].children);
+
+    // Preserve a user-set custom title carried on the existing primary.
+    const customTitle = metas.length ? (metas[0].data.customTitle || '') : '';
+    const payloads = chunkSessionMeta(session.order, customTitle, session.ledger);
+
+    // Reconcile bookmarks to payloads: update existing in seq order, create any
+    // additional chunks, delete any now-surplus ones.
+    for (let i = 0; i < payloads.length; i++) {
+      const url = encodeMetaUrl(payloads[i]);
+      if (i < metas.length) {
+        await updateBookmarkUrl(metas[i].id, url);
+      } else {
+        const bm = await createBookmark(session.folderId, metaTitleForSeq(i), url);
+        if (i === 0) session.metaBookmarkId = bm.id;
+      }
     }
+    for (let i = payloads.length; i < metas.length; i++) {
+      await removeBookmarkNode(metas[i].id);
+    }
+    if (metas.length) session.metaBookmarkId = metas[0].id;
   },
 
   async setModelUrl(session, model, url) {
@@ -530,58 +669,53 @@ const bookmarkRepo = {
         .filter(c => c.url && !isMetaBookmarkUrl(c.url))
         .map(c => modelForUrl(c.url))
         .filter(Boolean);
-      const metaChild = children.find(c => c.url && isMetaBookmarkUrl(c.url));
-      const meta = metaChild ? parseMetaUrl(metaChild.url) : null;
-      const customTitle = (meta && meta.customTitle) ? meta.customTitle : '';
+      const metas = collectMetaBookmarks(children);
+      const customTitle = metas.length ? (metas[0].data.customTitle || '') : '';
       return { folderId: folder.id, title: folder.title, models: models, customTitle: customTitle };
     });
     return sessions.reverse(); // newest first
   },
 
   async renameSession(folderId, customTitle) {
-    const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(folderId, resolve));
+    const sub = await getSubTree(folderId);
     if (!sub || !sub[0]) throw new Error("Session folder not found.");
-    const children = sub[0].children || [];
-    const metaChild = children.find(c => c.url && isMetaBookmarkUrl(c.url));
-    if (metaChild) {
-      const data = parseMetaUrl(metaChild.url) || { v: 1, order: [], turns: [] };
+    const metas = collectMetaBookmarks(sub[0].children);
+    if (metas.length) {
+      // Rewrite only the primary (seq 0); its turn chunk is preserved.
+      const data = metas[0].data || { v: 1, seq: 0, order: [], turns: [] };
+      data.seq = 0;
       if (customTitle) data.customTitle = customTitle; else delete data.customTitle;
-      await new Promise((resolve) => {
-        chrome.bookmarks.update(metaChild.id, { url: buildMetaUrl(data) },
-          () => resolve(void chrome.runtime.lastError));
-      });
+      await updateBookmarkUrl(metas[0].id, buildMetaUrl(data));
     } else if (customTitle) {
-      // No meta record yet — create one carrying just the custom title. The next
-      // saveMeta() fills in order/turns and preserves this title.
-      await createBookmark(folderId, META_TITLE, buildMetaUrl({ v: 1, order: [], turns: [], customTitle: customTitle }));
+      // No meta record yet — create the primary carrying just the custom title.
+      // The next saveMeta() fills in order/turns and preserves this title.
+      await createBookmark(folderId, META_TITLE,
+        buildMetaUrl({ v: 1, seq: 0, order: [], turns: [], customTitle: customTitle }));
     }
   },
 
   async loadSession(folderId) {
-    const sub = await new Promise((resolve) => chrome.bookmarks.getSubTree(folderId, resolve));
+    const sub = await getSubTree(folderId);
     if (!sub || !sub[0]) throw new Error("Session folder not found.");
     const children = sub[0].children || [];
 
-    let meta = null;
-    let metaBookmarkId = null;
     const bookmarks = {};
     const urls = {};
     for (const child of children) {
-      if (!child.url) continue;
-      if (isMetaBookmarkUrl(child.url)) {
-        meta = parseMetaUrl(child.url);
-        metaBookmarkId = child.id;
-        continue;
-      }
+      if (!child.url || isMetaBookmarkUrl(child.url)) continue;
       const model = modelForUrl(child.url);
       if (model) { bookmarks[model] = child.id; urls[model] = child.url; }
     }
 
-    const order = (meta && Array.isArray(meta.order) && meta.order.length)
-      ? meta.order.filter(m => urls[m])
+    const metas = collectMetaBookmarks(children);
+    const merged = mergeMeta(metas);
+    const order = (merged.order && merged.order.length)
+      ? merged.order.filter(m => urls[m])
       : Object.keys(urls);
-    const turns = (meta && Array.isArray(meta.turns)) ? meta.turns : [];
-    return { order: order, turns: turns, urls: urls, bookmarks: bookmarks, metaBookmarkId: metaBookmarkId };
+    return {
+      order: order, turns: merged.turns, urls: urls, bookmarks: bookmarks,
+      metaBookmarkId: metas.length ? metas[0].id : null
+    };
   },
 
   async removeSession(folderId) {
@@ -709,8 +843,18 @@ async function ensureSessionPersisted(session) {
 
 // Append one broadcast turn to the active session's ledger and persist it. The
 // first recorded turn is what promotes a tiled-but-unsaved session into a saved
-// one.
-async function recordLedgerTurn(turnId, prompt) {
+// one. Writes are chained through `ledgerWriteChain` so two near-simultaneous
+// broadcasts can't interleave the get→push→set sequence and drop an entry.
+let ledgerWriteChain = Promise.resolve();
+
+function recordLedgerTurn(turnId, prompt) {
+  ledgerWriteChain = ledgerWriteChain
+    .then(() => doRecordLedgerTurn(turnId, prompt))
+    .catch((e) => console.warn("Could not record ledger turn:", e));
+  return ledgerWriteChain;
+}
+
+async function doRecordLedgerTurn(turnId, prompt) {
   const session = await getActiveSession();
   if (!session) return;
   session.ledger.push({ id: turnId, p: normalizePromptPrefix(prompt) });
@@ -936,8 +1080,10 @@ async function handleBroadcast(prompt, source, sender, turnId) {
     const allTabs = await chrome.tabs.query({});
 
     for (const model of targetModels) {
-      const tab = allTabs.find(t => tabMatchesModel(t, model));
-      if (tab && managedIds.has(tab.windowId)) {
+      // Only consider tabs in managed windows: a stray, unmanaged chatbot tab
+      // that happens to come first in the tab list must not shadow the tiled one.
+      const tab = allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId));
+      if (tab) {
         chrome.tabs.sendMessage(tab.id, {
           action: 'inject_prompt',
           prompt: prompt,
@@ -952,28 +1098,52 @@ async function handleBroadcast(prompt, source, sender, turnId) {
 
 // --- Export ----------------------------------------------------------------
 
+// Pick the workspace whose chats an export should capture: the workspace tab
+// that is currently active in the last-focused window, if any. (Opening the
+// popup doesn't change the active tab, so this is the workspace the user was
+// just looking at.) Returns null when no workspace tab is in front.
+async function activeWorkspaceForExport() {
+  const map = await getWorkspaces();
+  if (!Object.keys(map).length) return null;
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (activeTab && map[activeTab.id]) return map[activeTab.id];
+  } catch (e) { /* fall through */ }
+  return null;
+}
+
+// Ask one content script (a managed tab, or a workspace pane via frameId) for
+// its chat history. Resolves to the history array, or [] if the script is gone
+// or reports failure.
+function extractHistory(tabId, frameId) {
+  return new Promise((resolve) => {
+    const handle = (res) => resolve((!chrome.runtime.lastError && res && res.success) ? res.history : []);
+    if (frameId != null) {
+      chrome.tabs.sendMessage(tabId, { action: 'extract_chat_history' }, { frameId: frameId }, handle);
+    } else {
+      chrome.tabs.sendMessage(tabId, { action: 'extract_chat_history' }, handle);
+    }
+  });
+}
+
 async function handleExport(models) {
   const allTabs = await chrome.tabs.query({});
   const managedWindowIds = await getManagedWindowIds();
+  // With multiple workspaces possible, export the one the user is looking at:
+  // the active tab in the last-focused window (the popup doesn't steal that).
+  const workspace = await activeWorkspaceForExport();
   const results = {};
 
   for (const model of models) {
-    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedWindowIds.has(t.windowId));
-    if (tab) {
-      try {
-        const response = await new Promise((resolve, reject) => {
-          chrome.tabs.sendMessage(tab.id, { action: 'extract_chat_history' }, (res) => {
-            chrome.runtime.lastError ? reject(chrome.runtime.lastError) : resolve(res);
-          });
-        });
-        results[model] = (response && response.success) ? response.history : [];
-      } catch (err) {
-        console.warn(`Could not extract history for ${model}:`, err);
-        results[model] = [];
-      }
-    } else {
-      results[model] = [];
+    // A workspace pane (chatbots live in frames of the extension tab, invisible
+    // to the hostname/tab matching) takes precedence over a managed window.
+    const frame = workspace && workspace.frames && workspace.frames[model];
+    if (frame) {
+      results[model] = await extractHistory(frame.tabId, frame.frameId);
+      continue;
     }
+    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedWindowIds.has(t.windowId));
+    results[model] = tab ? await extractHistory(tab.id) : [];
   }
   return results;
 }
@@ -984,9 +1154,20 @@ async function listSessions() {
   return await sessionRepo.listSessions();
 }
 
+// Keep only the chatbots currently selected in the popup. Used when reopening a
+// saved session so a model the user has since deselected gets no window/pane.
+// Falls back to the full set if the user has deselected everything in it.
+async function filterToSelected(order) {
+  const { selectedModels } = await chrome.storage.local.get(['selectedModels']);
+  if (!Array.isArray(selectedModels) || !selectedModels.length) return order;
+  const sel = new Set(selectedModels);
+  const kept = order.filter(m => sel.has(m));
+  return kept.length ? kept : order;
+}
+
 async function openSession(folderId, screenInfo) {
   const loaded = await sessionRepo.loadSession(folderId);
-  const order = loaded.order;
+  const order = await filterToSelected(loaded.order);
   if (!order || order.length === 0) throw new Error("No chatbots saved in this session.");
 
   await closeTiledWindows();
@@ -1038,3 +1219,381 @@ async function deleteSession(folderId) {
 async function renameSession(folderId, title) {
   await sessionRepo.renameSession(folderId, (title || '').trim());
 }
+
+// --- Iframe workspace (EXPERIMENTAL SPIKE) ----------------------------------
+//
+// An extension page (workspace.html) embeds the chatbots in side-by-side
+// iframes with one shared prompt box. The sites forbid framing via
+// X-Frame-Options / CSP frame-ancestors, so while the workspace tab is open we
+// install a *session* declarativeNetRequest rule — scoped to exactly that tab
+// and to sub_frame loads — that strips those headers.
+//
+// The list includes two service hosts the chatbots frame *within themselves*:
+// accounts.google.com (Gemini's session-cookie rotation frame) and a.claude.ai
+// (Claude's sandboxed segment). Their frame-ancestors checks walk the whole
+// ancestor chain, which now contains our extension origin, so without this
+// they get blocked — observed as Gemini failing to rotate its session inside
+// the workspace. The rule being session-only, sub_frame-only, and pinned to
+// the workspace tab keeps the clickjacking exposure contained; a full Google
+// sign-in inside a pane is still expected to fail (Google also blocks embedded
+// logins in JS) — sign in via a normal tab instead.
+//
+// Known trade-off: DNR can only remove whole headers, not edit values, so the
+// framed site's entire CSP — including its own XSS protections — is dropped
+// inside the panes. Acceptable for this experiment; revisit before shipping.
+
+const WORKSPACE_RULE_ID = 7001;
+const WORKSPACE_DOMAINS = [
+  'gemini.google.com', 'claude.ai', 'chatgpt.com',
+  'accounts.google.com', 'a.claude.ai'
+];
+
+// Workspaces are keyed by their tab id, so any number can be open at once —
+// each a tab of iframes with its own shared prompt box that broadcasts only to
+// the panes in that same tab. A single declarativeNetRequest rule (header
+// stripping) covers all open workspace tabs via its tabIds list. One entry:
+//   { frames:{model->{tabId,frameId}}, urls:{}, turns:[], reattached:{}, navigated:{} }
+async function getWorkspaces() {
+  const r = await sessionStore.get(['workspaces']);
+  return r.workspaces || {};
+}
+
+async function getWorkspaceForTab(tabId) {
+  const map = await getWorkspaces();
+  return map[tabId] || null;
+}
+
+// Serialise workspace-map writes: all three frames of a tab hello at the same
+// moment on load (and several tabs may be doing so at once), so an interleaved
+// read-modify-write would silently drop a pane from the registry.
+let workspaceWriteChain = Promise.resolve();
+
+function withWorkspaces(mutate) {
+  workspaceWriteChain = workspaceWriteChain.then(async () => {
+    const map = await getWorkspaces();
+    mutate(map);
+    await sessionStore.set({ workspaces: map });
+  }).catch((e) => console.warn('Workspace state update failed:', e));
+  return workspaceWriteChain;
+}
+
+// Re-derive the header-stripping rule's tab scope from the set of open
+// workspace tabs. Called whenever a workspace tab opens or closes.
+async function syncWorkspaceRules() {
+  const map = await getWorkspaces();
+  const tabIds = Object.keys(map).map(Number);
+  if (!tabIds.length) {
+    try {
+      await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [WORKSPACE_RULE_ID] });
+    } catch (e) { /* rule already gone */ }
+    return;
+  }
+  await chrome.declarativeNetRequest.updateSessionRules({
+    removeRuleIds: [WORKSPACE_RULE_ID],
+    addRules: [{
+      id: WORKSPACE_RULE_ID,
+      priority: 1,
+      action: {
+        type: 'modifyHeaders',
+        responseHeaders: [
+          { header: 'x-frame-options', operation: 'remove' },
+          { header: 'content-security-policy', operation: 'remove' }
+        ]
+      },
+      condition: {
+        requestDomains: WORKSPACE_DOMAINS,
+        resourceTypes: ['sub_frame'],
+        tabIds: tabIds
+      }
+    }]
+  });
+}
+
+// Open a NEW workspace tab. `folderId` is a saved session to reopen, or null
+// for a fresh chat; it travels in the URL hash so each tab is self-describing
+// (no shared "pending target" to race when several are opened at once).
+async function openWorkspace(folderId) {
+  if (!chrome.declarativeNetRequest ||
+      typeof chrome.declarativeNetRequest.updateSessionRules !== 'function') {
+    throw new Error('This browser does not support the header rules the workspace needs.');
+  }
+  const hash = folderId ? '#session=' + encodeURIComponent(folderId) : '';
+  await chrome.tabs.create({ url: chrome.runtime.getURL('workspace.html') + hash });
+}
+
+// The workspace page announcing itself: register its tab, scope the header
+// rules to include it, and hand back which panes to create. A fresh chat uses
+// the selected models at their launcher URLs; reopening a saved session
+// (folderId from the page's hash) uses that session's saved per-model
+// conversation URLs and carries its turn ledger for re-stamping.
+async function initWorkspace(sender, folderId) {
+  if (!sender || !sender.tab) throw new Error('Workspace tab not identified.');
+  const tabId = sender.tab.id;
+
+  let order, urls, turns = [];
+  let sessionFolderId = null, bookmarks = {}, metaBookmarkId = null;
+  if (folderId) {
+    const loaded = await sessionRepo.loadSession(folderId);
+    order = await filterToSelected(loaded.order);
+    if (!order || !order.length) throw new Error('No chatbots saved in this session.');
+    urls = {};
+    for (const m of order) urls[m] = loaded.urls[m] || AI_URLS[m];
+    turns = Array.isArray(loaded.turns) ? loaded.turns : [];
+    // New prompts in this tab append to the same saved session.
+    sessionFolderId = folderId;
+    bookmarks = loaded.bookmarks || {};
+    metaBookmarkId = loaded.metaBookmarkId || null;
+  } else {
+    const { selectedModels } = await chrome.storage.local.get(['selectedModels']);
+    order = (Array.isArray(selectedModels) && selectedModels.length)
+      ? selectedModels.filter(m => AI_URLS[m])
+      : Object.keys(AI_URLS);
+    urls = {};
+    for (const m of order) urls[m] = AI_URLS[m];
+  }
+
+  // Register the tab (order + seeded urls so reloaded panes restore, turns for
+  // re-stamp, and the session handles so prompts persist), then extend the
+  // header rule to cover it — all before the page creates any iframe (it only
+  // does so after this returns).
+  await withWorkspaces((map) => {
+    map[tabId] = {
+      order: order.slice(), frames: {}, urls: { ...urls }, turns: turns,
+      reattached: {}, navigated: {},
+      folderId: sessionFolderId, bookmarks: bookmarks, metaBookmarkId: metaBookmarkId
+    };
+  });
+  await syncWorkspaceRules();
+  return { order: order, urls: urls };
+}
+
+async function registerWorkspaceFrame(model, sender) {
+  if (!model || !sender || !sender.tab || sender.frameId == null) return {};
+  const tabId = sender.tab.id;
+  const map = await getWorkspaces();
+  const entry = map[tabId];
+  if (!entry) return {}; // not a frame inside a known workspace tab
+
+  // Hellos arrive as a heartbeat; only act when the registration changed.
+  const existing = entry.frames && entry.frames[model];
+  if (!existing || existing.frameId !== sender.frameId) {
+    await withWorkspaces((m) => {
+      if (!m[tabId]) return;
+      m[tabId].frames[model] = { tabId: tabId, frameId: sender.frameId };
+    });
+
+    // Reopened saved session: re-stamp this pane's reloaded turns with their
+    // original ids so export alignment survives. Once per frame instance.
+    const turns = entry.turns || [];
+    const alreadyReattached = entry.reattached && entry.reattached[model] === sender.frameId;
+    if (turns.length && !alreadyReattached) {
+      chrome.tabs.sendMessage(
+        tabId,
+        { action: 'reattach_turns', turns: turns },
+        { frameId: sender.frameId },
+        () => void chrome.runtime.lastError
+      );
+      await withWorkspaces((m) => {
+        if (!m[tabId]) return;
+        m[tabId].reattached = m[tabId].reattached || {};
+        m[tabId].reattached[model] = sender.frameId;
+      });
+    }
+  }
+
+  // A spontaneous frame reload reverts the pane to the iframe's original src
+  // (the blank launcher), abandoning the conversation. If this pane has a real
+  // conversation permalink on record, steer it back there — but defensively:
+  //   • the saved URL must itself be a stable conversation URL, so a fresh chat
+  //     (whose saved URL is the launcher) is never told to "restore" to the
+  //     launcher on every heartbeat, and
+  //   • we steer to a given URL at most once, so a conversation URL that won't
+  //     "stick" (keeps bouncing to the launcher) can't drive a reload loop.
+  // Reload loops here trip the sites' bot-detection (observed: Gemini CAPTCHA).
+  const savedUrl = entry.urls && entry.urls[model];
+  const alreadySteered = entry.navigated && entry.navigated[model] === savedUrl;
+  if (savedUrl && !alreadySteered &&
+      isStableConversationUrl(model, savedUrl) &&
+      sender.url && sender.url !== savedUrl &&
+      !isStableConversationUrl(model, sender.url)) {
+    await withWorkspaces((m) => {
+      if (!m[tabId]) return;
+      m[tabId].navigated = m[tabId].navigated || {};
+      m[tabId].navigated[model] = savedUrl;
+    });
+    return { navigate: savedUrl };
+  }
+  return {};
+}
+
+// A workspace pane reporting a stable conversation permalink (via the
+// session_url messages content scripts already send). Recorded so a reloaded
+// pane can be steered back to its conversation.
+async function captureWorkspaceUrl(url, sender) {
+  const model = modelForUrl(url);
+  if (!model || !isStableConversationUrl(model, url)) return;
+  if (!sender || !sender.tab) return;
+  const tabId = sender.tab.id;
+  const map = await getWorkspaces();
+  const entry = map[tabId];
+  if (!entry) return;
+  const frame = entry.frames && entry.frames[model];
+  if (!frame || frame.frameId !== sender.frameId) return;
+  // Update the in-memory url only when it changed (drives reload-restore), but
+  // still persist below on every stable report: the session may be created (by
+  // the first prompt) AFTER the first URL report, and the content script only
+  // re-reports a URL a handful of times — so a dedup-and-return here could leave
+  // the bookmark stuck on the launcher URL.
+  if (!(entry.urls && entry.urls[model] === url)) {
+    await withWorkspaces((m) => {
+      if (!m[tabId]) return;
+      m[tabId].urls = m[tabId].urls || {};
+      m[tabId].urls[model] = url;
+    });
+  }
+
+  // If this tab's chat is already a saved session, point its per-model bookmark
+  // at the live conversation permalink (so reopening resumes the real chat).
+  if (entry.folderId && entry.bookmarks && entry.bookmarks[model]) {
+    try {
+      await sessionRepo.setModelUrl(
+        { folderId: entry.folderId, bookmarks: entry.bookmarks }, model, url);
+    } catch (e) {
+      console.warn('Could not update saved workspace URL:', e);
+    }
+  }
+}
+
+// Deliver a message to one workspace frame, retrying briefly (the pane may be
+// mid-reload, with no content script listening yet). Resolves to whether the
+// frame actually acknowledged it.
+function sendToFrameWithRetry(frame, message) {
+  return new Promise((resolve) => {
+    const attempt = (n) => {
+      chrome.tabs.sendMessage(frame.tabId, message, { frameId: frame.frameId }, (res) => {
+        if (!chrome.runtime.lastError && res && res.success) {
+          resolve(true);
+          return;
+        }
+        if (n < 10) setTimeout(() => attempt(n + 1), 500); // ~5s of patience
+        else resolve(false);
+      });
+    };
+    attempt(0);
+  });
+}
+
+// One workspace's shared prompt box → every pane in THAT tab (identified by the
+// sender), with one shared turn id so export alignment works unchanged.
+async function handleWorkspaceBroadcast(prompt, sender) {
+  if (!sender || !sender.tab) return { status: 'error', error: 'Unknown workspace tab.' };
+  const entry = await getWorkspaceForTab(sender.tab.id);
+  const models = entry ? Object.keys(entry.frames || {}) : [];
+  if (!models.length) {
+    return { status: 'error', error: 'No chatbot panes are ready yet.' };
+  }
+  const turnId = generateTurnId();
+  const results = await Promise.all(models.map(async (model) => ({
+    model: model,
+    delivered: await sendToFrameWithRetry(
+      entry.frames[model],
+      { action: 'inject_prompt', prompt: prompt, turnId: turnId }
+    )
+  })));
+  const sent = results.filter(r => r.delivered).map(r => r.model);
+  const failed = results.filter(r => !r.delivered).map(r => r.model);
+  if (!sent.length) {
+    return { status: 'error', error: 'No pane accepted the prompt (' + failed.join(', ') + ').' };
+  }
+  // Persist the turn so a Tiled-in-a-Tab chat is saved like a tiled one (the
+  // first turn lazily creates the durable session record).
+  persistWorkspaceTurn(sender.tab.id, turnId, prompt);
+  return { status: 'success', turnId: turnId, models: sent, failed: failed };
+}
+
+// Record a workspace turn into its durable session, creating the record lazily
+// on the first prompt (so a tab that's opened but never used saves nothing).
+// Mirrors the tiled-mode recordLedgerTurn/ensureSessionPersisted path, but keyed
+// to the workspace tab's entry. Serialised so concurrent turns and the folder's
+// read-modify-write meta reconciliation can't interleave.
+let workspacePersistChain = Promise.resolve();
+
+function persistWorkspaceTurn(tabId, turnId, prompt) {
+  workspacePersistChain = workspacePersistChain
+    .then(() => doPersistWorkspaceTurn(tabId, turnId, prompt))
+    .catch((e) => console.warn('Could not persist workspace turn:', e));
+  return workspacePersistChain;
+}
+
+async function doPersistWorkspaceTurn(tabId, turnId, prompt) {
+  const map = await getWorkspaces();
+  const entry = map[tabId];
+  if (!entry) return;
+
+  const ledger = Array.isArray(entry.turns) ? entry.turns.slice() : [];
+  ledger.push({ id: turnId, p: normalizePromptPrefix(prompt) });
+
+  const session = {
+    folderId: entry.folderId || null,
+    order: entry.order || Object.keys(entry.frames || {}),
+    ledger: ledger,
+    bookmarks: entry.bookmarks || {},
+    metaBookmarkId: entry.metaBookmarkId || null
+  };
+
+  if (!session.folderId) {
+    // Lazily create the durable record from each pane's current URL.
+    const urls = {};
+    for (const m of session.order) urls[m] = (entry.urls && entry.urls[m]) || AI_URLS[m];
+    await sessionRepo.createSession(session, session.order, urls);
+  }
+  await sessionRepo.saveMeta(session);
+
+  // Store the ledger and any handles the repo set back onto the tab's entry.
+  await withWorkspaces((m) => {
+    if (!m[tabId]) return;
+    m[tabId].turns = ledger;
+    m[tabId].folderId = session.folderId;
+    m[tabId].bookmarks = session.bookmarks;
+    m[tabId].metaBookmarkId = session.metaBookmarkId;
+  });
+}
+
+// Extract every pane's chat history for one workspace tab (its own Export
+// button), keyed by model — same shape handleExport returns, so the shared
+// alignment/markdown code in align.js consumes it unchanged.
+async function exportWorkspaceTab(sender) {
+  if (!sender || !sender.tab) throw new Error('Unknown workspace tab.');
+  const entry = await getWorkspaceForTab(sender.tab.id);
+  if (!entry) throw new Error('This workspace tab has no panes registered.');
+  const results = {};
+  for (const model of Object.keys(entry.frames || {})) {
+    const frame = entry.frames[model];
+    results[model] = await extractHistory(frame.tabId, frame.frameId);
+  }
+  return results;
+}
+
+// A pane reporting its injection outcome. Forward it only to ITS OWN workspace
+// tab's prompt bar (runtime.sendMessage would otherwise broadcast to every open
+// workspace page, crossing the wires between tabs).
+async function forwardPaneResult(model, ok, sender) {
+  if (!sender || !sender.tab) return;
+  const entry = await getWorkspaceForTab(sender.tab.id);
+  if (!entry) return;
+  chrome.tabs.sendMessage(
+    sender.tab.id,
+    { action: 'workspace_pane_result', model: model, ok: ok },
+    { frameId: 0 },
+    () => void chrome.runtime.lastError
+  );
+}
+
+// Closing a workspace tab drops its entry and re-scopes the header rule.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const map = await getWorkspaces();
+  if (map[tabId]) {
+    await withWorkspaces((m) => { delete m[tabId]; });
+    await syncWorkspaceRules();
+  }
+});

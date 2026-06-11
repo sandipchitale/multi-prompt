@@ -1,13 +1,20 @@
 {
   "manifest_version": 3,
   "name": "Multi-Prompt Split View",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Send a single prompt to two AI chatbots simultaneously using Chrome split view windows.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "tabs",
     "windows",
     "storage",
-    "bookmarks"
+    "bookmarks",
+    "declarativeNetRequestWithHostAccess"
   ],
   "host_permissions": [
     "*://gemini.google.com/*",
@@ -19,23 +26,32 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Configure Multi-Prompt"
+    "default_title": "Configure Multi-Prompt",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
-      "matches": ["*://gemini.google.com/app*"],
+      "matches": ["*://gemini.google.com/*"],
       "js": ["content/common.js", "content/gemini.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     },
     {
       "matches": ["*://claude.ai/*"],
       "js": ["content/common.js", "content/claude.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     },
     {
       "matches": ["*://chatgpt.com/*"],
       "js": ["content/common.js", "content/chatgpt.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }

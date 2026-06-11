@@ -46,6 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const closeTilesBtn = document.getElementById('close-tiles-btn');
   const sessionsSelect = document.getElementById('sessions-select');
   const sessionOpenBtn = document.getElementById('session-open-btn');
+  const sessionOpenWorkspaceBtn = document.getElementById('session-open-workspace-btn');
   const sessionDeleteBtn = document.getElementById('session-delete-btn');
   const sessionRenameBtn = document.getElementById('session-rename-btn');
   const sessionRenameRow = document.getElementById('session-rename-row');
@@ -350,6 +351,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateSessionButtons() {
     const hasSelection = !!(sessionsSelect && sessionsSelect.value);
     if (sessionOpenBtn) sessionOpenBtn.disabled = !hasSelection;
+    if (sessionOpenWorkspaceBtn) sessionOpenWorkspaceBtn.disabled = !hasSelection;
     if (sessionDeleteBtn) sessionDeleteBtn.disabled = !hasSelection;
     if (sessionRenameBtn) sessionRenameBtn.disabled = !hasSelection;
     updateSessionsSelectTooltip();
@@ -390,6 +392,35 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
         setTimeout(() => { updateState(); window.close(); }, 600);
+      });
+    });
+  }
+
+  // Reopen a saved session tiled inside one tab (iframes) rather than as
+  // separate tiled OS windows.
+  if (sessionOpenWorkspaceBtn) {
+    sessionOpenWorkspaceBtn.addEventListener('click', () => {
+      const folderId = sessionsSelect.value;
+      if (!folderId) return;
+      const textSpan = sessionOpenWorkspaceBtn.querySelector('.btn-text');
+      const originalText = textSpan.textContent;
+      textSpan.textContent = 'Opening…';
+      sessionOpenWorkspaceBtn.disabled = true;
+
+      chrome.runtime.sendMessage({
+        action: 'open_workspace',
+        folderId: folderId
+      }, (response) => {
+        if (chrome.runtime.lastError || !response || response.status !== 'success') {
+          alert('Could not open this session tiled in a tab: ' +
+            (chrome.runtime.lastError
+              ? chrome.runtime.lastError.message
+              : (response && response.error) || 'no response'));
+          textSpan.textContent = originalText;
+          sessionOpenWorkspaceBtn.disabled = false;
+          return;
+        }
+        setTimeout(() => { window.close(); }, 400);
       });
     });
   }
@@ -525,6 +556,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // OPEN WORKSPACE BUTTON (experimental iframe mode)
+  const workspaceBtn = document.getElementById('workspace-btn');
+  if (workspaceBtn) {
+    workspaceBtn.addEventListener('click', () => {
+      workspaceBtn.disabled = true;
+      chrome.runtime.sendMessage({ action: 'open_workspace' }, (response) => {
+        workspaceBtn.disabled = false;
+        if (chrome.runtime.lastError || !response || response.status !== 'success') {
+          alert('Could not open Tiled in a Tab: ' +
+            (chrome.runtime.lastError
+              ? chrome.runtime.lastError.message
+              : (response && response.error) || 'no response'));
+          return;
+        }
+        window.close();
+      });
+    });
+  }
+
   // Save export format preference
   if (exportFormat) {
     exportFormat.addEventListener('change', (e) => {
@@ -556,19 +606,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
           }
 
-          const history = response.history;
-          const format = exportFormat ? exportFormat.value : 'markdown';
-
-          if (format === 'markdown') {
-            const mdContent = generateMarkdown(history);
-            const dateStr = new Date().toISOString().slice(0, 10);
-            downloadFile(mdContent, `multi-prompt-chats-${dateStr}.md`, 'text/markdown');
-          } else if (format === 'pdf') {
-            // Save to storage and open export page
-            chrome.storage.local.set({ lastExportedHistory: history }, () => {
-              chrome.tabs.create({ url: chrome.runtime.getURL('export.html') });
-            });
-          }
+          // deliverExport (align.js) handles both Markdown download and PDF view.
+          deliverExport(response.history, exportFormat ? exportFormat.value : 'markdown');
 
           setTimeout(() => {
             textSpan.textContent = originalText;
@@ -579,49 +618,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function generateMarkdown(history) {
-    let md = `# Multi-Prompt Conversation Export\n`;
-    md += `Exported on: ${new Date().toLocaleString()}\n\n`;
-    md += `---\n\n`;
-
-    const modelNames = {
-      gemini: 'Gemini',
-      claude: 'Claude',
-      chatgpt: 'ChatGPT'
-    };
-
-    const alignedTurns = alignHistory(history);
-
-    alignedTurns.forEach(turn => {
-      if (turn.prompt || Object.keys(turn.responses).length > 0) {
-        if (turn.prompt) {
-          md += `## 👤 Prompt\n${turn.prompt}\n\n`;
-        }
-
-        Object.entries(turn.responses).forEach(([model, responseText]) => {
-          if (!responseText) return;
-          const name = modelNames[model] || model;
-          md += `### 🤖 ${name}\n${responseText}\n\n`;
-        });
-
-        md += `---\n\n`;
-      }
-    });
-
-    return md;
-  }
-
-  function downloadFile(content, filename, contentType) {
-    const blob = new Blob([content], { type: contentType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
+  // generateMarkdown / downloadFile live in align.js (shared with the workspace
+  // export), loaded before this file by popup.html.
 
   // CLOSE TILES BUTTON
   if (closeTilesBtn) {
@@ -653,128 +651,5 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSessions();
 });
 
-// Group a single model's history into turns: { prompt, response }
-function getChatbotTurns(messages) {
-  const turns = [];
-  let currentTurn = null;
-
-  messages.forEach(msg => {
-    const msgText = (msg.text || '').trim();
-    if (msg.role === 'user') {
-      if (currentTurn && currentTurn.response) {
-        turns.push(currentTurn);
-        currentTurn = null;
-      }
-      if (!currentTurn) {
-        currentTurn = { prompt: msgText, response: '', turnId: msg.turnId || null };
-      } else {
-        currentTurn.prompt += '\n\n' + msgText;
-        if (!currentTurn.turnId && msg.turnId) currentTurn.turnId = msg.turnId;
-      }
-    } else if (msg.role === 'assistant') {
-      if (!currentTurn) {
-        currentTurn = { prompt: '', response: msgText };
-      } else {
-        if (!currentTurn.response) {
-          currentTurn.response = msgText;
-        } else {
-          currentTurn.response += '\n\n' + msgText;
-        }
-      }
-    }
-  });
-  if (currentTurn) {
-    currentTurn.prompt = currentTurn.prompt.trim();
-    currentTurn.response = currentTurn.response.trim();
-    turns.push(currentTurn);
-  }
-  return turns;
-}
-
-// Compare prompt texts ignoring whitespace and case
-function promptsMatch(p1, p2) {
-  if (!p1 && !p2) return true;
-  if (!p1 || !p2) return false;
-
-  const clean = (text) => {
-    return text.trim().toLowerCase().replace(/\s+/g, ' ');
-  };
-
-  const c1 = clean(p1);
-  const c2 = clean(p2);
-
-  if (c1 === c2) return true;
-
-  if (c1.length > 20 && c2.length > 20) {
-    if (c1.startsWith(c2) || c2.startsWith(c1)) return true;
-  }
-
-  return false;
-}
-
-// Align history across all chatbots.
-//
-// Turns broadcast by the extension carry a shared turnId stamped onto every
-// model's rendered turn, so they are grouped exactly by that id. Turns without
-// an id (e.g. typed before tiling, or where tagging failed) fall back to the
-// fuzzy prompt-text match so nothing is silently dropped.
-function alignHistory(history) {
-  const modelTurns = {};
-  Object.keys(history).forEach(model => {
-    modelTurns[model] = getChatbotTurns(history[model]);
-  });
-
-  const alignedTurns = [];
-  const byTurnId = new Map();
-
-  Object.keys(modelTurns).forEach(model => {
-    modelTurns[model].forEach((turn, idx) => {
-      let matched = null;
-      if (turn.turnId && byTurnId.has(turn.turnId)) {
-        matched = byTurnId.get(turn.turnId);
-      } else {
-        // Find the earliest bucket this model hasn't filled yet whose prompt
-        // matches and whose id is compatible. "Compatible" means at least one
-        // side is untagged, or both ids are equal — so an untagged turn (e.g. a
-        // model that lost its tag) still merges into a tagged group, while two
-        // DIFFERENT ids never merge (keeping identical prompts separate).
-        matched = alignedTurns.find(item =>
-          !(model in item.responses) &&
-          (item.turnId == null || turn.turnId == null || item.turnId === turn.turnId) &&
-          promptsMatch(item.prompt, turn.prompt)
-        );
-      }
-
-      if (!matched) {
-        matched = { prompt: turn.prompt, responses: {}, turnId: null, indices: [] };
-        alignedTurns.push(matched);
-      }
-      if (turn.turnId && matched.turnId == null) {
-        matched.turnId = turn.turnId;
-        byTurnId.set(turn.turnId, matched);
-      }
-      if (turn.prompt.length > matched.prompt.length) matched.prompt = turn.prompt;
-
-      matched.responses[model] = turn.response;
-      matched.indices.push(idx);
-    });
-  });
-
-  // Calculate average index for sorting
-  alignedTurns.forEach(turn => {
-    const sum = turn.indices.reduce((a, b) => a + b, 0);
-    turn.avgIndex = sum / turn.indices.length;
-  });
-
-  // Sort aligned turns chronologically by average index
-  alignedTurns.sort((a, b) => a.avgIndex - b.avgIndex);
-
-  // Clean up bookkeeping properties
-  alignedTurns.forEach(turn => {
-    delete turn.indices;
-    delete turn.avgIndex;
-    delete turn.turnId;
-  });
-
-  return alignedTurns;
-}
+// getChatbotTurns / promptsMatch / alignHistory live in align.js (shared with
+// export.js), loaded before this file by popup.html.

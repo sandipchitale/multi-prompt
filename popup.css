@@ -32,7 +32,7 @@ body {
   margin: 0;
   padding: 14px;
   box-sizing: border-box;
-  width: 560px; /* Fixed width for Extension Popup */
+  width: 800px; /* Roomy popup; 800px is the browser's max action-popup width */
 }
 
 .container {

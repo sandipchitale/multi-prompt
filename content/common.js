@@ -7,6 +7,14 @@
 // broadcast interception) lives here so it is defined exactly once.
 
 (function () {
+  // Verbose injection tracing (which insertion strategy ran, send clicks, turn
+  // detection). Set true when debugging a pane that won't accept prompts; the
+  // workspace status line (✓/✗ per pane) covers the day-to-day signal.
+  const DEBUG = false;
+  function dbg(...args) {
+    if (DEBUG) console.info('[Multi-Prompt]', ...args);
+  }
+
   // True while we are programmatically filling/submitting an editor, so the
   // broadcast interceptors below ignore the events our own injection produces.
   let isProgrammaticInput = false;
@@ -31,6 +39,10 @@
   let siteConfig = null;
   let turnObserver = null;
   let reconcileQueued = false;
+
+  // True when this frame is a workspace pane root (a direct child of the
+  // workspace page). Set in init(); used to report injection results.
+  let isWorkspacePane = false;
 
   function getUserTurnEls() {
     if (!siteConfig || !siteConfig.userTurnSelector) return [];
@@ -65,8 +77,13 @@
 
   // After a submission, wait for the new user turn to render, then record its id
   // at its ordinal position (it is the newest, hence last) and stamp it.
-  function tagNewUserTurn(turnId, beforeCount) {
-    if (!turnId || !siteConfig || !siteConfig.userTurnSelector) return;
+  // `onDone(rendered)` reports whether a new turn ever appeared — the ground
+  // truth for "this prompt was actually sent".
+  function tagNewUserTurn(turnId, beforeCount, onDone) {
+    if (!turnId || !siteConfig || !siteConfig.userTurnSelector) {
+      if (onDone) onDone(false);
+      return;
+    }
     let attempts = 0;
 
     const tryTag = () => {
@@ -75,9 +92,15 @@
         turnLedger[els.length - 1] = turnId;
         reconcileTurnTags();
         ensureTurnObserver();
+        // Confirm before reporting success: a transient node (optimistic render
+        // that the site rolls back on error) can satisfy the count briefly.
+        if (onDone) {
+          setTimeout(() => onDone(getUserTurnEls().length > beforeCount), 1500);
+        }
         return;
       }
       if (attempts++ < 40) setTimeout(tryTag, 250); // ~10s of grace
+      else if (onDone) onDone(false);
     };
 
     tryTag();
@@ -153,9 +176,8 @@
   }
 
   // Set the editor text safely. For form controls we use the native value
-  // setter so React notices the change; for contenteditable we build a
-  // paragraph from a text node (never innerHTML) so prompts containing
-  // "<", "&" or other markup are inserted verbatim instead of being parsed.
+  // setter so React notices the change; contenteditables go through
+  // setContentEditableText below.
   function setEditorText(field, text) {
     field.focus();
 
@@ -166,21 +188,78 @@
         : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
       setter.call(field, text);
+      field.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: text
+      }));
+      field.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      field.replaceChildren();
-      const p = document.createElement('p');
-      p.textContent = text;
-      field.appendChild(p);
+      setContentEditableText(field, text);
+    }
+  }
 
-      // Place the caret at the end so the wake-up insertText below appends.
-      const range = document.createRange();
-      range.selectNodeContents(field);
-      range.collapse(false);
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
+  function selectAllIn(field) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(field);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return selection;
+  }
+
+  // Rich editors (ProseMirror/Lexical) keep an internal document model and can
+  // revert DOM mutations they didn't make — which looks like the injected text
+  // flashing in (or never appearing) and the composer staying empty. So try
+  // strategies that go through the editor's own input pipeline first, verifying
+  // after each, and only fall back to direct DOM mutation as a last resort.
+  function setContentEditableText(field, text) {
+    const matches = () => readPrompt(field) === text.trim();
+
+    // 1) execCommand('insertText'): deprecated, but routes through beforeinput,
+    // which is exactly how these editors ingest typing.
+    field.focus();
+    selectAllIn(field);
+    try { document.execCommand('insertText', false, text); } catch (e) { /* ignore */ }
+    if (matches()) {
+      dbg('inserted via execCommand');
+      return;
     }
 
+    // 2) Synthetic paste: rich editors implement their own paste handling and
+    // don't require a trusted event for it.
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      field.focus();
+      selectAllIn(field);
+      field.dispatchEvent(new ClipboardEvent('paste', {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true
+      }));
+    } catch (e) { /* ignore */ }
+    if (matches()) {
+      dbg('inserted via synthetic paste');
+      return;
+    }
+
+    dbg('falling back to direct DOM insertion (editor may revert it)');
+
+    // 3) Direct DOM mutation (never innerHTML, so markup in prompts stays
+    // verbatim). Frameworks may revert this on their next render; the
+    // send-button wait in submitInjectedPrompt gives them time to settle.
+    field.replaceChildren();
+    const p = document.createElement('p');
+    p.textContent = text;
+    field.appendChild(p);
+    const range = document.createRange();
+    range.selectNodeContents(field);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
     field.dispatchEvent(new InputEvent('input', {
       bubbles: true,
       cancelable: true,
@@ -190,38 +269,137 @@
     field.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  function isVisible(el) {
+    if (!el || el.offsetParent === null) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  // The composer editor. The site configs list selectors most-specific first
+  // (e.g. '#prompt-textarea' before the broad 'div[contenteditable="true"]'),
+  // so honour that order: use the first selector that has any visible match.
+  // Within one selector take the last visible match — these UIs render their
+  // composer at the bottom of the page, below stray editable elements.
+  function findEditor(config) {
+    for (const selector of config.inputSelector.split(',')) {
+      const visible = Array.from(document.querySelectorAll(selector.trim())).filter(isVisible);
+      if (visible.length) return visible[visible.length - 1];
+    }
+    return null;
+  }
+
+  // A send button that can actually be clicked right now. While a response is
+  // streaming the sites disable the button or swap it for a "stop" control, in
+  // which case this returns null and the caller should wait.
+  function findSendButton(config) {
+    return Array.from(document.querySelectorAll(config.sendSelector)).find(b =>
+      isVisible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true'
+    ) || null;
+  }
+
+  function dispatchEnter(field) {
+    field.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      shiftKey: false,
+      bubbles: true,
+      cancelable: true
+    }));
+  }
+
   // Submit the composer: click the site's send button, or fall back to an
-  // Enter keypress on the editor. Used both when mirroring a prompt into a
-  // target window and when sending the user's own prompt in the source window.
+  // Enter keypress on the editor. Used when sending the user's own prompt in
+  // the source window (where the button is expected to be ready immediately).
   function clickSendOrEnter(config, field) {
-    const sendBtn = document.querySelector(config.sendSelector);
-    if (sendBtn && !sendBtn.disabled) {
+    const sendBtn = findSendButton(config);
+    if (sendBtn) {
       sendBtn.click();
     } else {
-      field.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        shiftKey: false,
-        bubbles: true,
-        cancelable: true
-      }));
+      dispatchEnter(field);
     }
   }
 
+  // Submit an injected prompt, waiting out streaming. The send button may be
+  // unavailable for a long while (a previous response still generating), so we
+  // poll for a clickable one before resorting to a synthetic Enter — which
+  // sites are free to ignore (isTrusted === false), making it a true last
+  // resort. After clicking we verify the editor actually emptied and retry the
+  // set+click cycle once, since framework re-renders can swallow a click.
+  function submitInjectedPrompt(config, field, prompt, turnId, beforeCount) {
+    let attempts = 0;
+    let retried = false;
+    const expected = prompt.trim();
+
+    const finish = () => {
+      // Report the outcome to the workspace status line (when we're a pane):
+      // a freshly rendered user turn is the proof the prompt actually went out.
+      tagNewUserTurn(turnId, beforeCount, (sent) => {
+        dbg('user turn rendered:', sent);
+        if (isWorkspacePane) {
+          chrome.runtime.sendMessage(
+            { action: 'workspace_inject_result', model: config.source, ok: sent },
+            () => void chrome.runtime.lastError
+          );
+        }
+      });
+      scheduleUrlReports();
+      setTimeout(() => { isProgrammaticInput = false; }, 500);
+    };
+
+    const verify = () => {
+      const editor = findEditor(config);
+      if (!retried && editor && readPrompt(editor) === expected) {
+        retried = true;
+        dbg('send click was swallowed; re-inserting and retrying');
+        setEditorText(editor, prompt);
+        setTimeout(tryClick, 700);
+        return;
+      }
+      finish();
+    };
+
+    const tryClick = () => {
+      const btn = findSendButton(config);
+      if (btn) {
+        dbg('clicking send button');
+        btn.click();
+        setTimeout(verify, 1500);
+        return;
+      }
+      // ~45s of patience: long enough for a slow previous response to finish
+      // streaming and the send button to come back.
+      if (attempts++ < 90) {
+        setTimeout(tryClick, 500);
+        return;
+      }
+      console.warn('[Multi-Prompt] no clickable send button appeared; dispatching synthetic Enter (sites may ignore it)');
+      dispatchEnter(findEditor(config) || field);
+      finish();
+    };
+
+    tryClick();
+  }
+
   // Fill the editor with the prompt and submit it. Retries while the SPA is
-  // still mounting its editor, then submits via clickSendOrEnter. The injection
-  // guard is released only once submission has actually been triggered, rather
-  // than after a fixed timeout.
+  // still mounting its editor. The injection guard is released only once
+  // submission has actually been triggered, rather than after a fixed timeout.
   function injectPrompt(config, prompt, turnId) {
     let attempts = 0;
 
     const tryInject = () => {
-      const field = document.querySelector(config.inputSelector);
+      const field = findEditor(config);
       if (!field) {
         if (attempts++ > 15) {
+          console.warn('[Multi-Prompt] inject failed: no visible editor for selector', config.inputSelector);
           isProgrammaticInput = false;
+          if (isWorkspacePane) {
+            chrome.runtime.sendMessage(
+              { action: 'workspace_inject_result', model: config.source, ok: false },
+              () => void chrome.runtime.lastError
+            );
+          }
           return;
         }
         setTimeout(tryInject, 1000);
@@ -233,16 +411,8 @@
       const beforeCount = getUserTurnEls().length;
 
       setEditorText(field, prompt);
-      // Deprecated but still the most reliable nudge for rich editors
-      // (ProseMirror/Lexical) to commit the change to their internal model.
-      try { document.execCommand('insertText', false, ' '); } catch (e) { /* ignore */ }
 
-      setTimeout(() => {
-        clickSendOrEnter(config, field);
-        tagNewUserTurn(turnId, beforeCount);
-        scheduleUrlReports();
-        setTimeout(() => { isProgrammaticInput = false; }, 500);
-      }, 1000);
+      setTimeout(() => submitInjectedPrompt(config, field, prompt, turnId, beforeCount), 800);
     };
 
     tryInject();
@@ -372,13 +542,45 @@
 
   function init(config) {
     siteConfig = config;
+
+    // Frame roles: the tab's top frame (window-tiling mode), a workspace pane
+    // root (direct child of the workspace page), or a nested helper iframe the
+    // sites embed within themselves on the same origin (login/cookie-rotation/
+    // analytics frames). Nested frames have no composer — and if they ran this
+    // script their hello would overwrite the pane's registration and hijack its
+    // broadcasts (observed with ChatGPT/Gemini) — so they opt out entirely.
+    const isTopFrame = window.self === window.top;
+    const isPaneRoot = !isTopFrame && window.parent === window.top;
+    if (!isTopFrame && !isPaneRoot) return;
+    isWorkspacePane = isPaneRoot;
+
     requestManagedButton();
 
-    // Report our URL now and whenever it changes, so the saved session learns
-    // the real conversation permalink (covers SPA history navigations that
-    // tabs.onUpdated misses in Safari).
+    // A pane root announces which model it hosts so the shared prompt box can
+    // target it by frameId. Sent as a heartbeat (not just once) so a pane that
+    // reloads, or a registry lost to background restarts, re-registers within
+    // seconds. If the background knows this pane's session already has a
+    // conversation (we reloaded back to the blank launcher), it answers with
+    // the URL to return to.
+    const sendWorkspaceHello = () => {
+      chrome.runtime.sendMessage(
+        { action: 'workspace_hello', model: config.source },
+        (response) => {
+          void chrome.runtime.lastError;
+          if (response && response.navigate) location.href = response.navigate;
+        }
+      );
+    };
+    if (isPaneRoot) sendWorkspaceHello();
+
+    // Heartbeat: report our URL (so the saved session learns the conversation
+    // permalink — covers SPA navigations tabs.onUpdated misses in Safari) and,
+    // for a pane root, keep the workspace registration fresh.
     reportUrl();
-    setInterval(reportUrl, 2000);
+    setInterval(() => {
+      reportUrl();
+      if (isPaneRoot) sendWorkspaceHello();
+    }, 2000);
 
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (request.action === 'inject_prompt') {
@@ -439,7 +641,7 @@
       if (isProgrammaticInput) return;
       if (!e.target.closest(config.sendSelector)) return;
 
-      const field = document.querySelector(config.inputSelector);
+      const field = findEditor(config);
       if (!field) return;
 
       const prompt = readPrompt(field);

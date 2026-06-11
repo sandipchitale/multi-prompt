@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Multi-Prompt — Tiled in a Tab</title>
+  <style>
+    :root {
+      --bg: #f7f9fa;
+      --panel: #ffffff;
+      --border: #d8dee9;
+      --text: #1a1d29;
+      --muted: #5d6478;
+    }
+    [data-theme="dark"] {
+      --bg: #0f111a;
+      --panel: #161925;
+      --border: #2a2f45;
+      --text: #e7e9f0;
+      --muted: #8a90a8;
+    }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .panes { flex: 1; display: flex; min-height: 0; }
+    .pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-right: 1px solid var(--border);
+    }
+    /* Draggable splitter between panes (panes flex-grow, splitter fixed width). */
+    .splitter {
+      flex: 0 0 6px;
+      cursor: col-resize;
+      background: var(--border);
+      transition: background 0.15s ease;
+    }
+    .splitter:hover, .splitter.active { background: #7c3aed; }
+    /* Covers the iframes during a drag so the parent keeps getting mouse events. */
+    .drag-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      cursor: col-resize;
+    }
+    .pane { border-right: none; }
+    .pane h2 {
+      margin: 0;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    .pane-dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      vertical-align: middle;
+      background: var(--muted);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+    .pane-dot.connected {
+      background: #22c55e;
+      box-shadow: 0 0 5px rgba(34, 197, 94, 0.7);
+    }
+    .pane-dot.disconnected {
+      background: #ef4444;
+      box-shadow: 0 0 5px rgba(239, 68, 68, 0.7);
+    }
+    .pane iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+    .composer {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 12px;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+    }
+    #prompt {
+      flex: 1;
+      height: 44px;
+      resize: none;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: inherit;
+      font: inherit;
+    }
+    #prompt:focus { outline: none; border-color: #7c3aed; }
+    #send {
+      height: 44px;
+      padding: 0 22px;
+      border: none;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #7c3aed 0%, #d946ef 100%);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #send:disabled { opacity: 0.5; cursor: default; }
+    #status { font-size: 11px; color: var(--muted); max-width: 200px; }
+    .bar-spacer { flex: 1; }
+    #ws-export-format {
+      height: 44px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      color: inherit;
+      font: inherit;
+      padding: 0 8px;
+    }
+    #ws-export {
+      height: 44px;
+      padding: 0 16px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #ws-export:disabled { opacity: 0.5; cursor: default; }
+    .notice {
+      margin: auto;
+      max-width: 480px;
+      text-align: center;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="panes" id="panes">
+    <div class="notice">Loading panes…</div>
+  </div>
+  <div class="composer">
+    <textarea id="prompt"
+      placeholder="Type a prompt — Enter sends it to every pane (Shift+Enter for a newline)"></textarea>
+    <button id="send" type="button">Send</button>
+    <span id="status"></span>
+    <span class="bar-spacer"></span>
+    <select id="ws-export-format" title="Export format">
+      <option value="markdown">Markdown (.md)</option>
+      <option value="pdf">PDF / Print (.pdf)</option>
+    </select>
+    <button id="ws-export" type="button" title="Export this tab's chats">Export</button>
+  </div>
+  <script src="align.js"></script>
+  <script src="workspace.js"></script>
+</body>
+</html>
