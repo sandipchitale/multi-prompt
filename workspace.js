@@ -291,15 +291,35 @@ document.addEventListener('DOMContentLoaded', () => {
     return panes.find((p) => p.el === el);
   }
 
-  // Splitters sit between every adjacent pair of tiles, collapsed or not —
-  // a splitter next to a fixed-width sliver resizes the nearest expanded
-  // tiles on either side instead. Re-derived from DOM order after reorders.
+  // A splitter only exists where dragging it can do something: an expanded
+  // tile somewhere on each side of the gap (slivers in between are skipped —
+  // the drag resizes the nearest expanded tiles). So a sliver between two
+  // expanded tiles keeps both flanking splitters, a sliver at the edge gets
+  // none, and a maximized layout shows no splitters at all.
   function rebuildSplitters() {
     panesEl.querySelectorAll('.splitter').forEach((s) => s.remove());
     const els = domPanes();
     for (let i = 1; i < els.length; i++) {
-      panesEl.insertBefore(makeSplitter(), els[i]);
+      const expandedLeft = els.slice(0, i).some((el) => !paneFor(el).collapsed);
+      const expandedRight = els.slice(i).some((el) => !paneFor(el).collapsed);
+      if (expandedLeft && expandedRight) {
+        panesEl.insertBefore(makeSplitter(), els[i]);
+      }
     }
+    updatePaneButtons();
+  }
+
+  // Titlebar buttons only exist where they can act. When a single expanded
+  // tile remains (incl. maximize mode), none are shown: it can't be collapsed
+  // (last one), and maximize/restore is moot — clicking a sliver, or
+  // double-clicking the titlebar, is the way back.
+  function updatePaneButtons() {
+    const expandedCount = panes.filter((x) => !x.collapsed).length;
+    panes.forEach((q) => {
+      const hidden = q.collapsed || expandedCount <= 1;
+      q.collapseBtn.style.display = hidden ? 'none' : '';
+      q.maxBtn.style.display = hidden ? 'none' : '';
+    });
   }
 
   function setCollapsed(p, collapsed) {
@@ -307,9 +327,9 @@ document.addEventListener('DOMContentLoaded', () => {
     p.el.classList.toggle('collapsed', collapsed);
     p.el.style.flex = collapsed ? '0 0 28px' : p.savedGrow + ' 1 0';
     // The sliver needs no buttons: a click anywhere on it expands, the grip
-    // reorders, and the splitters around it handle resizing.
-    p.collapseBtn.style.display = collapsed ? 'none' : '';
-    p.maxBtn.style.display = collapsed ? 'none' : '';
+    // reorders, and the splitters around it handle resizing. Button
+    // visibility is owned by updatePaneButtons(), which always runs after
+    // this via rebuildSplitters().
     p.titleEl.title = collapsed
       ? 'Click to expand • drag the grip to reorder'
       : 'Drag to reorder • double-click to maximize';
@@ -317,6 +337,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function collapsePane(p) {
     if (maximizedModel === p.model) restoreLayout();
+    // At least one tile must stay expanded — an all-sliver row is just
+    // dead space (and there'd be nothing to give the freed width to).
+    if (panes.filter((q) => !q.collapsed).length <= 1) return;
     if (!p.collapsed) p.savedGrow = parseFloat(p.el.style.flexGrow) || 1;
     setCollapsed(p, true);
     rebuildSplitters();
