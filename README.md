@@ -7,7 +7,7 @@ Multi-Prompt is a productivity tool that runs Gemini, Claude, and ChatGPT side-b
 It offers **two side-by-side layouts**:
 
 - **Tiled Windows** — each chatbot in its own tiled OS window (works in Chrome and Safari).
-- **Tiled in a Tab** — all chatbots as panes inside a single browser tab, with a shared prompt box and resizable splitters (experimental, Chrome only). You can open as many of these tabs as you like.
+- **Tiled in a Tab** — all chatbots as tiles inside a single browser tab, with a shared prompt box, resizable splitters, and full tile management: reorder, collapse, and maximize (experimental, Chrome only). You can open as many of these tabs as you like.
 
 ![Multi-Prompt Tiled](screenshots/multi-prompt.png)
 
@@ -16,7 +16,11 @@ It offers **two side-by-side layouts**:
 - **Multi-Model Support:** Select any combination of Gemini, Claude, and ChatGPT (from 1 to all 3).
 - **Two layouts, one model:**
   - **New Chat (Tiled Windows)** tiles the selected chatbots in separate OS windows. Only one set of tiled windows exists at a time.
-  - **New Chat (Tiled in a Tab)** opens the chatbots as iframe panes in one tab with a shared prompt box; drag the splitters between panes to resize. Open multiple such tabs — each tab's prompt box broadcasts only to that tab's panes, shown by a green/red connection dot per pane.
+  - **New Chat (Tiled in a Tab)** opens the chatbots as iframe tiles in one tab with a shared prompt box; drag the splitters between tiles to resize. Open multiple such tabs — each tab's prompt box broadcasts only to that tab's tiles. Each tile's titlebar shows a green/red **connection dot** plus a **✓ / ✗ / … badge** for whether the last prompt reached that chatbot.
+- **Tile Management (Tiled in a Tab):**
+  - **Reorder** tiles by dragging a titlebar (the grip dots mark the handle).
+  - **Collapse** a tile to a narrow sliver with its rotated title — the chat stays loaded and still receives broadcasts; click the sliver to expand it again. At least one tile always stays expanded.
+  - **Maximize** a tile (button or double-click its titlebar) to collapse the others to slivers; restore the same way — the exact previous layout, including widths, comes back. Titlebar buttons and splitters appear only in states where they can actually do something.
 - **Prompt Broadcasting:** In Tiled Windows mode, type natively in any chatbot and it replicates to the others. In Tiled in a Tab mode, type in the shared prompt box and it broadcasts to every pane.
 - **Exact Cross-Model Alignment:** Each broadcast is stamped with a shared, hidden **turn id** (a `data-mp-turn` DOM attribute added _after_ the message is sent — never injected into the prompt text the model sees). Export uses these ids to group every model's answer to the same prompt exactly, even when two prompts are textually identical.
 - **Robust Text Injection:** Prompts are inserted into each site's rich editor (ProseMirror/Lexical) through a verified strategy chain — `execCommand` → synthetic paste → direct DOM — and submitted only once a real, clickable send button appears (so a prompt is never sent while a previous response is still streaming).
@@ -24,7 +28,7 @@ It offers **two side-by-side layouts**:
 - **Saved Sessions Picker:** Reopen any saved session from the popup — as **Tiled Windows** or **Tiled in a Tab** — rename it inline, or delete it. Reopening re-tiles the saved conversations in order and **reattaches** the original turn ids, so exported alignment survives a reload.
 - **Visual Tiling Order & Drag-to-Reorder:** Select chatbots and arrange their left-to-right order from one row in the popup. In Tiled Windows mode, dragging a card physically slides the open windows to match.
 - **Export Chat History:** Export from the popup, or from a Tiled-in-a-Tab tab's own **Export** button, into Markdown (`.md`) or a clean PDF / print template grouped by prompt.
-- **Theme:** Auto / Light / Dark, followed by the popup, the export view, and the Tiled-in-a-Tab workspace.
+- **Theme:** Auto / Light / Dark — switchable from the popup or from the Tiled-in-a-Tab bottom bar, and kept in sync across the popup, the export view, and every workspace tab.
 
 ![Multi-Prompt Bookmarks](screenshots/multi-prompt-bookmarks.png)
 ![Multi-Prompt Export](screenshots/multi-prompt-export.png)
@@ -81,7 +85,7 @@ manifest.json        Manifest V3 config, permissions, content-script matches
 background.js        Service worker: tiling, broadcast, turn ids, sessions, DNR rules
 popup.html/.css/.js  Popup dashboard (model selection, modes, export, sessions)
 align.js             Shared cross-model turn alignment + export helpers
-workspace.html/.js   Tiled-in-a-Tab page: iframe panes, splitters, shared prompt box, Export
+workspace.html/.js   Tiled-in-a-Tab page: iframe tiles (reorder/collapse/maximize), splitters, shared prompt box, Export
 export.html/.js      Markdown → print/PDF transcript view
 content/common.js    Shared content-script logic (injection, tagging, extraction)
 content/{gemini,claude,chatgpt}.js   Per-site selectors and behaviours

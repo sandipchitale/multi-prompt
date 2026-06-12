@@ -10,6 +10,7 @@
       --border: #d8dee9;
       --text: #1a1d29;
       --muted: #5d6478;
+      --sliver-width: 28px; /* collapsed-tile strip; JS sizes panes from this too */
     }
     [data-theme="dark"] {
       --bg: #0f111a;
@@ -22,6 +23,9 @@
     body {
       display: flex;
       flex-direction: column;
+      /* Fixed-viewport app layout — never show a page scrollbar (its track
+         otherwise appears as a dead strip beside the rightmost tile). */
+      overflow: hidden;
       background: var(--bg);
       color: var(--text);
       font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -179,8 +183,7 @@
     }
     #prompt {
       flex: 1;
-      height: 40px;
-      max-height: 100px;
+      height: 40px; /* single-line base; autosizePrompt() grows/caps it from JS */
       overflow-y: auto;
       resize: none;
       box-sizing: border-box;

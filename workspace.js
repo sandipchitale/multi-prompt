@@ -14,29 +14,36 @@ document.addEventListener('DOMContentLoaded', () => {
   // Inline SVG icons for the tile titlebars — text glyphs (–, ⛶, …) render at
   // inconsistent optical sizes per platform; these stay fixed and inherit the
   // button's color via currentColor.
-  const SVG_OPEN = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">';
+  const strokeIcon = (body) =>
+    '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>';
   const ICONS = {
-    minus: SVG_OPEN + '<path d="M2.5 6h7"/></svg>',
-    maximize: SVG_OPEN + '<rect x="2" y="2" width="8" height="8" rx="1.5"/></svg>',
-    restore: SVG_OPEN + '<path d="M4.5 3.5v-1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/>' +
-      '<rect x="1.5" y="4.5" width="6" height="6" rx="1"/></svg>',
+    minus: strokeIcon('<path d="M2.5 6h7"/>'),
+    maximize: strokeIcon('<rect x="2" y="2" width="8" height="8" rx="1.5"/>'),
+    restore: strokeIcon('<path d="M4.5 3.5v-1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/>' +
+      '<rect x="1.5" y="4.5" width="6" height="6" rx="1"/>'),
     grip: '<svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">' +
       '<circle cx="2.5" cy="2.5" r="1"/><circle cx="5.5" cy="2.5" r="1"/>' +
       '<circle cx="2.5" cy="6" r="1"/><circle cx="5.5" cy="6" r="1"/>' +
       '<circle cx="2.5" cy="9.5" r="1"/><circle cx="5.5" cy="9.5" r="1"/></svg>',
   };
 
+  // Width of a collapsed tile; the CSS sizes the strip's contents from the
+  // same --sliver-width custom property (defined in workspace.html).
+  const SLIVER_FLEX = '0 0 var(--sliver-width)';
+  // How long after a click-expands-a-sliver to ignore dblclick, so the pair
+  // of clicks doesn't cascade into a surprise maximize.
+  const DBLCLICK_IGNORE_MS = 600;
+
   // --- Theme: follow the popup's setting (auto / light / dark) --------------
   let themePref = 'auto';
 
+  // Applies the page theme AND syncs the toggle's radios, so every caller
+  // (init, toggle change, popup change, OS change) stays consistent.
   function applyTheme() {
     const dark = themePref === 'dark' ||
       (themePref === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-  }
-
-  function checkThemeRadio() {
     const radio = document.querySelector('input[name="theme"][value="' + themePref + '"]');
     if (radio) radio.checked = true;
   }
@@ -44,7 +51,6 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get(['themePref'], (result) => {
     themePref = result.themePref || 'auto';
     applyTheme();
-    checkThemeRadio();
   });
 
   document.querySelectorAll('input[name="theme"]').forEach((radio) => {
@@ -63,7 +69,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (areaName === 'local' && changes.themePref) {
       themePref = changes.themePref.newValue || 'auto';
       applyTheme();
-      checkThemeRadio();
     }
   });
 
@@ -188,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
       title.addEventListener('dblclick', (e) => {
         if (e.target.closest('button')) return;
         if (p.collapsed) { expandPane(p); return; }
-        if (p.clickExpandedAt && Date.now() - p.clickExpandedAt < 600) return;
+        if (p.clickExpandedAt && Date.now() - p.clickExpandedAt < DBLCLICK_IGNORE_MS) return;
         toggleMaximize(p);
       });
     });
@@ -306,7 +311,23 @@ document.addEventListener('DOMContentLoaded', () => {
         panesEl.insertBefore(makeSplitter(), els[i]);
       }
     }
+    normalizeGrows();
     updatePaneButtons();
+  }
+
+  // Flexbox only distributes ALL free space when the flex-grow values sum to
+  // >= 1; below that it hands out just that fraction, leaving a gap. Splitter
+  // drags shift grow weight between tiles, so collapsing tiles can leave the
+  // remainder summing under 1 (e.g. a lone tile at grow 0.4 fills 40% of the
+  // freed width). Rescale the expanded tiles to keep their proportions while
+  // summing to their count (>= 1).
+  function normalizeGrows() {
+    const expanded = panes.filter((q) => !q.collapsed);
+    const total = expanded.reduce((a, q) => a + (parseFloat(q.el.style.flexGrow) || 1), 0);
+    if (total <= 0) return;
+    expanded.forEach((q) => {
+      q.el.style.flexGrow = (parseFloat(q.el.style.flexGrow) || 1) / total * expanded.length;
+    });
   }
 
   // Titlebar buttons only exist where they can act. When a single expanded
@@ -325,7 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function setCollapsed(p, collapsed) {
     p.collapsed = collapsed;
     p.el.classList.toggle('collapsed', collapsed);
-    p.el.style.flex = collapsed ? '0 0 28px' : p.savedGrow + ' 1 0';
+    p.el.style.flex = collapsed ? SLIVER_FLEX : p.savedGrow + ' 1 0';
     // The sliver needs no buttons: a click anywhere on it expands, the grip
     // reorders, and the splitters around it handle resizing. Button
     // visibility is owned by updatePaneButtons(), which always runs after
@@ -470,15 +491,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 2000);
 
   // The prompt grows with its content (Shift+Enter) up to ~4 lines; the shell
-  // relaxes from a pill to a rounded rect once it's multi-line.
+  // relaxes from a pill to a rounded rect once it's multi-line. JS owns the
+  // height entirely — the CSS only sets the single-line base.
   const promptShell = document.querySelector('.prompt-shell');
-  const PROMPT_MAX_HEIGHT = 100;
+  const PROMPT_BASE_HEIGHT = 40;  // matches #prompt height in the CSS
+  const PROMPT_MAX_HEIGHT = 100;  // ~4 lines
 
   function autosizePrompt() {
     promptEl.style.height = 'auto';
     const h = Math.min(promptEl.scrollHeight, PROMPT_MAX_HEIGHT);
     promptEl.style.height = h + 'px';
-    promptShell.classList.toggle('multiline', h > 44);
+    promptShell.classList.toggle('multiline', h > PROMPT_BASE_HEIGHT + 4);
   }
 
   promptEl.addEventListener('input', autosizePrompt);
