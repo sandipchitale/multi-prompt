@@ -53,7 +53,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionRenameInput = document.getElementById('session-rename-input');
   const sessionRenameSave = document.getElementById('session-rename-save');
   const sessionRenameCancel = document.getElementById('session-rename-cancel');
+  const privateChatCheckbox = document.getElementById('private-chat');
   let savedSessions = [];
+
+  // Private/temporary chats: the background reads this pref when launching new
+  // chats (both modes) and tells each chatbot to enter its private mode.
+  privateChatCheckbox.addEventListener('change', () => {
+    chrome.storage.local.set({ privateChatPref: privateChatCheckbox.checked });
+  });
 
   // Tiled in a Tab cannot work on Safari (its declarativeNetRequest cannot
   // remove the X-Frame-Options/CSP response headers the iframes need stripped),
@@ -89,7 +96,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Load saved selections, order, and export format preference
-  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref'], (result) => {
+  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref', 'privateChatPref'], (result) => {
+    privateChatCheckbox.checked = !!result.privateChatPref;
     const sel = Array.isArray(result.selectedModels) ? result.selectedModels : ALL_MODELS.slice();
     selected = new Set(sel);
 

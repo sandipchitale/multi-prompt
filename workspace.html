@@ -134,11 +134,20 @@
       background: #ef4444;
       box-shadow: 0 0 5px rgba(239, 68, 68, 0.7);
     }
-    /* Last-broadcast result for this pane (… sending / ✓ delivered / ✗ failed). */
+    /* Ghost = this pane is in private/temporary chat mode (status-polled). */
+    .pane-ghost { display: none; color: #7c3aed; }
+    .pane-ghost.on { display: flex; }
+    /* Last-broadcast result for this pane (… sending / ✓ delivered / ✗ failed).
+       A ✓ is transient: it lingers a few seconds, then fades out (JS adds
+       .fade, then clears the badge) — failures persist until the next send. */
     .pane-result { font-size: 11px; font-weight: 700; }
     .pane-result.pending { color: var(--muted); }
     .pane-result.ok { color: #22c55e; }
     .pane-result.fail { color: #ef4444; }
+    @media (prefers-reduced-motion: no-preference) {
+      .pane-result { transition: opacity 0.6s ease; }
+    }
+    .pane-result.fade { opacity: 0; }
     .pane iframe { flex: 1; width: 100%; border: 0; background: #fff; }
     .composer {
       display: flex;
@@ -246,6 +255,30 @@
       cursor: pointer;
     }
     #ws-export:disabled { opacity: 0.5; cursor: default; }
+    /* Private-chat pill: same 54px pill as Export, plus an "all panes are
+       private" active state. */
+    #ws-private {
+      height: 54px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 20px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #ws-private svg { display: block; }
+    #ws-private:disabled { cursor: default; }
+    #ws-private.active {
+      border-color: #7c3aed;
+      color: #7c3aed;
+      box-shadow: 0 0 8px rgba(124, 58, 237, 0.35);
+    }
     /* Theme selector pill, matching the popup's segmented toggle. */
     .theme-toggle {
       height: 54px;
@@ -293,6 +326,7 @@
     .pane-btn:focus-visible,
     #send:focus-visible,
     #ws-export:focus-visible,
+    #ws-private:focus-visible,
     #ws-export-format:focus-visible {
       outline: 2px solid #7c3aed;
       outline-offset: 2px;
@@ -315,11 +349,24 @@
   </div>
   <div class="composer">
     <div class="prompt-shell">
-      <textarea id="prompt"
+      <!-- rows=1: without it the browser default (rows=2) makes height:auto
+           measure two lines tall, so the first keystroke ratcheted the shell
+           from 54px to 73px for good (autosizePrompt measures via height:auto). -->
+      <textarea id="prompt" rows="1"
         placeholder="Type a prompt — Enter sends it to every pane (Shift+Enter for a newline)"></textarea>
       <button id="send" type="button">Send</button>
     </div>
     <span id="status"></span>
+    <button id="ws-private" type="button"
+      title="Switch all panes to private/temporary chat — this chat will NOT be saved to Saved Sessions">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 10h.01"></path>
+        <path d="M15 10h.01"></path>
+        <path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"></path>
+      </svg>
+      <span id="ws-private-label">Private</span>
+    </button>
     <select id="ws-export-format" title="Export format">
       <option value="markdown">Markdown (.md)</option>
       <option value="pdf">PDF / Print (.pdf)</option>

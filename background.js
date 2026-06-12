@@ -317,16 +317,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // its frame hosts, so the shared prompt box can target it by frameId. The
     // response may carry a conversation URL to steer a freshly reloaded pane
     // back to (a frame reload reverts to the blank launcher src).
-    registerWorkspaceFrame(request.model, sender)
+    registerWorkspaceFrame(request.model, sender, !!request.private)
       .then(result => sendResponse({ ok: true, navigate: (result && result.navigate) || null }))
       .catch(() => sendResponse({ ok: true, navigate: null }));
     return true;
   } else if (request.action === 'workspace_status') {
     // A workspace page polling which of ITS panes are currently registered, for
-    // its per-pane connection indicators.
+    // its per-pane connection indicators — plus each pane's private-chat state
+    // for the titlebar ghost indicators.
     getWorkspaceForTab(sender && sender.tab && sender.tab.id).then(entry => {
-      sendResponse({ status: 'success', models: entry ? Object.keys(entry.frames || {}) : [] });
-    }).catch(() => sendResponse({ status: 'success', models: [] }));
+      sendResponse({
+        status: 'success',
+        models: entry ? Object.keys(entry.frames || {}) : [],
+        private: (entry && entry.framePrivate) || {},
+        privateMode: !!(entry && entry.privateMode)
+      });
+    }).catch(() => sendResponse({ status: 'success', models: [], private: {}, privateMode: false }));
+    return true;
+  } else if (request.action === 'workspace_private') {
+    // The workspace bar's Private button: switch every pane in that tab to the
+    // site's private/temporary mode and stop persisting the tab's session.
+    privatizeWorkspaceTab(sender).then(result => {
+      sendResponse(result);
+    }).catch(err => {
+      sendResponse({ status: 'error', error: err.message || String(err) });
+    });
     return true;
   } else if (request.action === 'workspace_broadcast') {
     handleWorkspaceBroadcast(request.prompt, sender).then(result => {
@@ -863,6 +878,9 @@ function recordLedgerTurn(turnId, prompt) {
 async function doRecordLedgerTurn(turnId, prompt) {
   const session = await getActiveSession();
   if (!session) return;
+  // Private/temporary chats are deliberately never saved: their conversation
+  // URLs are ephemeral, so a saved session could never be reopened anyway.
+  if (session.private) return;
   session.ledger.push({ id: turnId, p: normalizePromptPrefix(prompt) });
   try {
     await ensureSessionPersisted(session);
@@ -899,11 +917,20 @@ async function captureSessionUrl(url, tabId, windowId) {
 // fresh tiled windows (which begin on a blank chat). Either way it starts a
 // fresh active session whose durable record is saved lazily on the first prompt.
 
+// Whether new chats should start in the sites' private/temporary mode
+// (popup checkbox). Read at launch time, not stored on long-lived state, so
+// flipping the checkbox always affects the NEXT New Chat.
+async function getPrivateChatPref() {
+  const { privateChatPref } = await chrome.storage.local.get(['privateChatPref']);
+  return !!privateChatPref;
+}
+
 async function handleNewChat(models, screenInfo) {
   try {
     const n = models.length;
     if (n === 0) return;
 
+    const privateMode = await getPrivateChatPref();
     const session = await getActiveSession();
     if (session && await sessionWindowsMatch(session, models)) {
       // Reuse the existing tiled windows: re-tile, start a fresh chat in each.
@@ -913,10 +940,14 @@ async function handleNewChat(models, screenInfo) {
         });
       }
       await sendActionToTabs(models, 'new_chat');
-      await rotateSession(session, models);
+      await rotateSession(session, models, privateMode);
+      // After the in-page New Chat lands on the fresh launcher, click each
+      // site's private toggle (the content script polls for the button, so the
+      // SPA navigation racing this message is fine).
+      if (privateMode) await sendActionToTabs(models, 'enter_private_chat');
     } else {
       // Nothing usable open: tile fresh windows and start a new session.
-      await startFreshSession(models, screenInfo);
+      await startFreshSession(models, screenInfo, privateMode);
     }
   } catch (err) {
     console.error("Failed to start new chat:", err);
@@ -926,7 +957,7 @@ async function handleNewChat(models, screenInfo) {
 // Start a brand new (unsaved) active session for the conversations now living in
 // the given windows (reused from the previous session), leaving the old session
 // saved. The durable record is created lazily on the first prompt.
-async function rotateSession(session, models) {
+async function rotateSession(session, models, privateMode) {
   const next = {
     folderId: null,
     metaBookmarkId: null,
@@ -934,7 +965,8 @@ async function rotateSession(session, models) {
     windows: session.windows,
     tabs: session.tabs,
     bookmarks: {},
-    ledger: []
+    ledger: [],
+    private: !!privateMode
   };
   await setActiveSession(next);
 }
@@ -955,7 +987,7 @@ async function sessionWindowsMatch(session, models) {
 // Open fresh chats for each model, tiled. The active session is set up here but
 // its durable record is created lazily on the first prompt (see
 // ensureSessionPersisted), so tiling without ever typing leaves nothing saved.
-async function startFreshSession(models, screenInfo) {
+async function startFreshSession(models, screenInfo, privateMode) {
   await closeTiledWindows();
 
   const { windows, tabs, managed } = await openTiledWindows(models, (m) => AI_URLS[m], screenInfo);
@@ -966,7 +998,8 @@ async function startFreshSession(models, screenInfo) {
     windows: windows,
     tabs: tabs,
     bookmarks: {},
-    ledger: []
+    ledger: [],
+    private: !!privateMode
   };
 
   await setManagedWindowIds(managed);
@@ -976,6 +1009,14 @@ async function startFreshSession(models, screenInfo) {
   // pages load fast and may have queried query_managed before the ids above were
   // stored, so don't rely on that poll alone.
   notifyManagedButtons(session);
+
+  // Click each site's private/temporary toggle as soon as its content script
+  // answers (sendWhenReady retries while the launcher is still loading).
+  if (privateMode) {
+    for (const model of Object.keys(tabs)) {
+      if (tabs[model] != null) sendWhenReady(tabs[model], { action: 'enter_private_chat' });
+    }
+  }
 
   await tileWindows(models.map((m) => windows[m]), screenInfo);
 }
@@ -1437,6 +1478,9 @@ async function initWorkspace(sender, folderId) {
 
   let order, urls, turns = [];
   let sessionFolderId = null, bookmarks = {}, metaBookmarkId = null;
+  // Fresh chats honour the popup's private-chat checkbox; reopened saved
+  // sessions never auto-privatize (they are existing, non-private chats).
+  let privateMode = false;
   if (folderId) {
     const loaded = await sessionRepo.loadSession(folderId);
     order = await filterToSelected(loaded.order);
@@ -1455,6 +1499,7 @@ async function initWorkspace(sender, folderId) {
       : Object.keys(AI_URLS);
     urls = {};
     for (const m of order) urls[m] = AI_URLS[m];
+    privateMode = await getPrivateChatPref();
   }
 
   // Register the tab (order + seeded urls so reloaded panes restore, turns for
@@ -1464,7 +1509,8 @@ async function initWorkspace(sender, folderId) {
   await withWorkspaces((map) => {
     map[tabId] = {
       order: order.slice(), frames: {}, urls: { ...urls }, turns: turns,
-      reattached: {}, navigated: {},
+      reattached: {}, navigated: {}, privatized: {}, framePrivate: {},
+      privateMode: privateMode,
       folderId: sessionFolderId, bookmarks: bookmarks, metaBookmarkId: metaBookmarkId
     };
   });
@@ -1472,7 +1518,7 @@ async function initWorkspace(sender, folderId) {
   return { order: order, urls: urls };
 }
 
-async function registerWorkspaceFrame(model, sender) {
+async function registerWorkspaceFrame(model, sender, framePrivate) {
   if (!model || !sender || !sender.tab || sender.frameId == null) return {};
   const tabId = sender.tab.id;
   const map = await getWorkspaces();
@@ -1486,6 +1532,24 @@ async function registerWorkspaceFrame(model, sender) {
       if (!m[tabId]) return;
       m[tabId].frames[model] = { tabId: tabId, frameId: sender.frameId };
     });
+
+    // Private workspace: switch the pane to the site's private/temporary mode
+    // as soon as its frame registers. Once per frame instance (gated like
+    // reattach below) — the in-page toggle must never be clicked twice.
+    const alreadyPrivatized = entry.privatized && entry.privatized[model] === sender.frameId;
+    if (entry.privateMode && !alreadyPrivatized) {
+      chrome.tabs.sendMessage(
+        tabId,
+        { action: 'enter_private_chat' },
+        { frameId: sender.frameId },
+        () => void chrome.runtime.lastError
+      );
+      await withWorkspaces((m) => {
+        if (!m[tabId]) return;
+        m[tabId].privatized = m[tabId].privatized || {};
+        m[tabId].privatized[model] = sender.frameId;
+      });
+    }
 
     // Reopened saved session: re-stamp this pane's reloaded turns with their
     // original ids so export alignment survives. Once per frame instance.
@@ -1504,6 +1568,18 @@ async function registerWorkspaceFrame(model, sender) {
         m[tabId].reattached[model] = sender.frameId;
       });
     }
+  }
+
+  // Track each pane's live private state (reported with every hello) for the
+  // workspace UI's titlebar ghost indicators. Written only on change — hellos
+  // arrive every 2s per pane.
+  const knownPrivate = !!(entry.framePrivate && entry.framePrivate[model]);
+  if (knownPrivate !== !!framePrivate) {
+    await withWorkspaces((m) => {
+      if (!m[tabId]) return;
+      m[tabId].framePrivate = m[tabId].framePrivate || {};
+      m[tabId].framePrivate[model] = !!framePrivate;
+    });
   }
 
   // A spontaneous frame reload reverts the pane to the iframe's original src
@@ -1542,6 +1618,10 @@ async function captureWorkspaceUrl(url, sender) {
   const map = await getWorkspaces();
   const entry = map[tabId];
   if (!entry) return;
+  // A private tab records nothing: no URL capture (private permalinks are
+  // ephemeral) and — for a reopened saved session switched to private — its
+  // bookmarks must keep pointing at the original, pre-private conversation.
+  if (entry.privateMode) return;
   const frame = entry.frames && entry.frames[model];
   if (!frame || frame.frameId !== sender.frameId) return;
   // Update the in-memory url only when it changed (drives reload-restore), but
@@ -1616,6 +1696,45 @@ async function handleWorkspaceBroadcast(prompt, sender) {
   return { status: 'success', turnId: turnId, models: sent, failed: failed };
 }
 
+// Switch every registered pane of the sender's workspace tab to the site's
+// private/temporary chat mode (the bar's Private button). Marks the tab
+// private first — stopping session persistence and the URL-restore steering
+// (going private abandons any previous conversation by design) — then asks
+// each frame to click its toggle, reporting per-model outcomes. The content
+// script's page-lifetime guard makes repeat requests safe (the toggles are
+// never clicked twice).
+async function privatizeWorkspaceTab(sender) {
+  if (!sender || !sender.tab) throw new Error('Unknown workspace tab.');
+  const tabId = sender.tab.id;
+  const entry = await getWorkspaceForTab(tabId);
+  if (!entry) throw new Error('Workspace not registered.');
+  const models = Object.keys(entry.frames || {});
+  if (!models.length) throw new Error('No chatbot panes are ready yet.');
+
+  await withWorkspaces((m) => {
+    const e = m[tabId];
+    if (!e) return;
+    e.privateMode = true;
+    e.navigated = e.navigated || {};
+    for (const model of e.order || models) {
+      if (e.urls && e.urls[model]) e.navigated[model] = e.urls[model];
+    }
+  });
+
+  const results = await Promise.all(models.map((model) => new Promise((resolve) => {
+    chrome.tabs.sendMessage(
+      tabId,
+      { action: 'enter_private_chat' },
+      { frameId: entry.frames[model].frameId },
+      (response) => {
+        void chrome.runtime.lastError;
+        resolve({ model: model, ok: !!(response && response.success) });
+      }
+    );
+  })));
+  return { status: 'success', results: results };
+}
+
 // Record a workspace turn into its durable session, creating the record lazily
 // on the first prompt (so a tab that's opened but never used saves nothing).
 // Mirrors the tiled-mode recordLedgerTurn/ensureSessionPersisted path, but keyed
@@ -1634,6 +1753,9 @@ async function doPersistWorkspaceTurn(tabId, turnId, prompt) {
   const map = await getWorkspaces();
   const entry = map[tabId];
   if (!entry) return;
+  // Private/temporary chats are deliberately never saved: their conversation
+  // URLs are ephemeral, so a saved session could never be reopened anyway.
+  if (entry.privateMode) return;
 
   const ledger = Array.isArray(entry.turns) ? entry.turns.slice() : [];
   ledger.push({ id: turnId, p: normalizePromptPrefix(prompt) });

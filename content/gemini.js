@@ -7,6 +7,14 @@ MultiPrompt.init({
   sendSelector: 'button[aria-label*="Send message"], .send-button',
   // The rendered user-query element we stamp with the shared turn id.
   userTurnSelector: 'user-query',
+  // Temporary-chat toggle in the launcher's top bar. The clickable control is
+  // the button wrapping the distinctive gemini_chat_temp Material icon.
+  findPrivateButton() {
+    const icon = document.querySelector(
+      'mat-icon[data-mat-icon-name="gemini_chat_temp"], mat-icon[fonticon="gemini_chat_temp"]'
+    );
+    return icon ? icon.closest('button, [role="button"]') : null;
+  },
   newChat() {
     let newChatBtn = null;
 

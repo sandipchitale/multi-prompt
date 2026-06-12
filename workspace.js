@@ -26,6 +26,9 @@ document.addEventListener('DOMContentLoaded', () => {
       '<circle cx="2.5" cy="2.5" r="1"/><circle cx="5.5" cy="2.5" r="1"/>' +
       '<circle cx="2.5" cy="6" r="1"/><circle cx="5.5" cy="6" r="1"/>' +
       '<circle cx="2.5" cy="9.5" r="1"/><circle cx="5.5" cy="9.5" r="1"/></svg>',
+    ghost: strokeIcon('<path d="M6 1.2A4.3 4.3 0 0 0 1.7 5.5v5.3l1.45-1.45 1.4 1.4L6 9.3' +
+      'l1.45 1.45 1.4-1.4 1.45 1.45V5.5A4.3 4.3 0 0 0 6 1.2z"/>' +
+      '<path d="M4.5 5.5h.01"/><path d="M7.5 5.5h.01"/>'),
   };
 
   // Width of a collapsed tile; the CSS sizes the strip's contents from the
@@ -78,10 +81,27 @@ document.addEventListener('DOMContentLoaded', () => {
   // in each pane's titlebar, next to the connection dot.
   let paneResults = {};
   const paneBadges = {};
+  // Per-model timers fading out a success ✓. Failures (✗) persist: success is
+  // the expected outcome and only needs a moment of confirmation, while a
+  // failure must stay visible until the user acts on it.
+  const fadeTimers = {};
+
+  const FADE_AFTER_MS = 3500; // ✓ dwell time before it starts fading
+  const FADE_DURATION_MS = 600; // matches the .pane-result opacity transition
+
+  function clearFadeTimers() {
+    Object.keys(fadeTimers).forEach((model) => {
+      clearTimeout(fadeTimers[model]);
+      delete fadeTimers[model];
+    });
+  }
 
   function renderResults() {
     Object.keys(paneBadges).forEach((model) => {
       const badge = paneBadges[model];
+      // (Re)painting always restores full opacity; the fade class is only
+      // ever added by the timer below.
+      badge.classList.remove('fade');
       if (!(model in paneResults)) {
         badge.textContent = '';
         badge.className = 'pane-result';
@@ -98,12 +118,29 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // A confirmed ✓ lingers briefly, fades, then clears — leaving the healthy
+  // titlebar with just its connection dot. Guarded so a newer state (a fresh
+  // send's …, or a late ✗) is never wiped by a stale timer.
+  function scheduleSuccessFade(model) {
+    clearTimeout(fadeTimers[model]);
+    fadeTimers[model] = setTimeout(() => {
+      if (paneResults[model] !== true) return;
+      if (paneBadges[model]) paneBadges[model].classList.add('fade');
+      fadeTimers[model] = setTimeout(() => {
+        if (paneResults[model] !== true) return;
+        delete paneResults[model];
+        renderResults();
+      }, FADE_DURATION_MS);
+    }, FADE_AFTER_MS);
+  }
+
   // The background forwards each pane's injection result here, addressed only to
   // this tab (so multiple open workspaces don't cross wires).
   chrome.runtime.onMessage.addListener((request) => {
     if (request && request.action === 'workspace_pane_result' && request.model in paneResults) {
       paneResults[request.model] = !!request.ok;
       renderResults();
+      if (request.ok) scheduleSuccessFade(request.model);
     }
   });
 
@@ -117,6 +154,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Pane title elements by model, for the connection indicators below.
   const paneTitles = {};
+  // Per-pane ghost glyphs, shown while that pane is in private/temporary mode.
+  const paneGhosts = {};
 
   // Tile records ({ model, el, collapseBtn, maxBtn, collapsed, savedGrow }).
   // Tile order, collapse, and maximize state are session-local — a reload
@@ -153,6 +192,12 @@ document.addEventListener('DOMContentLoaded', () => {
       dot.className = 'pane-dot';
       paneTitles[model] = dot;
 
+      const ghost = document.createElement('span');
+      ghost.className = 'pane-ghost';
+      ghost.innerHTML = ICONS.ghost;
+      ghost.title = 'Private/temporary chat — this pane\'s conversation is not saved';
+      paneGhosts[model] = ghost;
+
       const badge = document.createElement('span');
       badge.className = 'pane-result';
       paneBadges[model] = badge;
@@ -165,7 +210,7 @@ document.addEventListener('DOMContentLoaded', () => {
       grip.title = 'Drag to reorder';
       const collapseBtn = makePaneBtn('minus', 'Collapse this tile');
       const maxBtn = makePaneBtn('maximize', 'Maximize this tile');
-      title.append(grip, name, dot, badge, spacer, collapseBtn, maxBtn);
+      title.append(grip, name, dot, ghost, badge, spacer, collapseBtn, maxBtn);
 
       const frame = document.createElement('iframe');
       frame.src = response.urls[model];
@@ -478,6 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.runtime.sendMessage({ action: 'workspace_status' }, (response) => {
       void chrome.runtime.lastError;
       const connected = new Set((response && response.models) || []);
+      const privates = (response && response.private) || {};
       Object.keys(paneTitles).forEach((model) => {
         const ok = connected.has(model);
         const dot = paneTitles[model];
@@ -486,9 +532,51 @@ document.addEventListener('DOMContentLoaded', () => {
         dot.title = ok
           ? 'Connected — prompts reach this pane'
           : 'NOT connected — prompts cannot reach this pane right now';
+        if (paneGhosts[model]) paneGhosts[model].classList.toggle('on', !!privates[model]);
       });
+      // The bar's Private pill lights up (and retires) once every connected
+      // pane is actually in private mode.
+      const allPrivate = connected.size > 0 &&
+        Array.from(connected).every((model) => !!privates[model]);
+      privateBtn.classList.toggle('active', allPrivate);
+      privateBtn.disabled = allPrivate || privateBtnBusy;
+      if (allPrivate) {
+        privateBtn.title = 'All panes are in private/temporary chat mode — ' +
+          'this chat will NOT be saved to Saved Sessions';
+      }
     });
   }, 2000);
+
+  // --- Switch all panes to private/temporary chat ----------------------------
+  const privateBtn = document.getElementById('ws-private');
+  const privateBtnLabel = document.getElementById('ws-private-label');
+  let privateBtnBusy = false;
+
+  privateBtn.addEventListener('click', () => {
+    privateBtnBusy = true;
+    privateBtn.disabled = true;
+    privateBtnLabel.textContent = 'Switching…';
+    statusEl.textContent = '';
+
+    chrome.runtime.sendMessage({ action: 'workspace_private' }, (response) => {
+      privateBtnBusy = false;
+      privateBtn.disabled = false;
+      privateBtnLabel.textContent = 'Private';
+      if (chrome.runtime.lastError || !response || response.status !== 'success') {
+        statusEl.textContent = 'Private failed: ' +
+          (chrome.runtime.lastError
+            ? chrome.runtime.lastError.message
+            : (response && response.error) || 'no response');
+        return;
+      }
+      const failed = (response.results || []).filter((r) => !r.ok).map((r) => r.model);
+      if (failed.length) {
+        statusEl.textContent = 'Private failed for: ' + failed.join(', ');
+      }
+      // Success shows itself: titlebar ghosts + the pill's active state via
+      // the status poll.
+    });
+  });
 
   // The prompt grows with its content (Shift+Enter) up to ~4 lines; the shell
   // relaxes from a pill to a rounded rect once it's multi-line. JS owns the
@@ -499,7 +587,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function autosizePrompt() {
     promptEl.style.height = 'auto';
-    const h = Math.min(promptEl.scrollHeight, PROMPT_MAX_HEIGHT);
+    // Clamp to the base height as well: a single line must always come back
+    // to the 54px pill, whatever the height:auto measurement says.
+    const h = Math.min(Math.max(promptEl.scrollHeight, PROMPT_BASE_HEIGHT), PROMPT_MAX_HEIGHT);
     promptEl.style.height = h + 'px';
     promptShell.classList.toggle('multiline', h > PROMPT_BASE_HEIGHT + 4);
   }
@@ -512,6 +602,7 @@ document.addEventListener('DOMContentLoaded', () => {
     sendBtn.disabled = true;
     sendBtn.textContent = 'Sending…';
     statusEl.textContent = '';
+    clearFadeTimers(); // a stale ✓-fade must not wipe this broadcast's fresh …
     paneResults = {};
     panes.forEach((p) => { paneResults[p.model] = 'pending'; });
     renderResults();

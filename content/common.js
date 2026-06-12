@@ -418,6 +418,54 @@
     tryInject();
   }
 
+  // --- Private / temporary chat mode -----------------------------------------
+  //
+  // Entering private mode means clicking the site's private/temporary-chat
+  // toggle on the launcher page. It IS a toggle — a second click would leave
+  // private mode again — so a page-lifetime guard makes repeated requests
+  // (auto-privatize on launch plus the workspace bar button, or a heartbeat
+  // re-registration) idempotent. Where the site exposes a detectable "private"
+  // state (config.isPrivateChat), that is the ground truth; otherwise the
+  // guard alone protects against double-clicking. Reset by 'new_chat', which
+  // navigates back to a normal (non-private) fresh chat without a page load.
+  let privateModeEntered = false;
+
+  function isPrivateNow(config) {
+    if (privateModeEntered) return true;
+    try { return !!(config.isPrivateChat && config.isPrivateChat()); }
+    catch (e) { return false; }
+  }
+
+  function enterPrivateChat(config, onDone) {
+    if (isPrivateNow(config)) {
+      privateModeEntered = true;
+      onDone(true);
+      return;
+    }
+    let attempts = 0;
+
+    const tryClick = () => {
+      if (isPrivateNow(config)) { privateModeEntered = true; onDone(true); return; }
+      const btn = config.findPrivateButton ? config.findPrivateButton() : null;
+      if (!btn || !isVisible(btn)) {
+        // The SPA may still be mounting its top bar — ~10s of grace.
+        if (attempts++ < 20) { setTimeout(tryClick, 500); return; }
+        console.warn('[Multi-Prompt] no private/temporary-chat button found');
+        onDone(false);
+        return;
+      }
+      dbg('clicking private-chat button');
+      btn.click();
+      // Guard immediately: whatever happens next, never click the toggle twice.
+      privateModeEntered = true;
+      if (!config.isPrivateChat) { onDone(true); return; }
+      // Verifiable sites: confirm the state actually flipped before reporting.
+      setTimeout(() => onDone(!!config.isPrivateChat()), 1200);
+    };
+
+    tryClick();
+  }
+
   // --- In-page floating button ---------------------------------------------
   //
   // When tiled into narrow side-by-side windows, the pinned toolbar action can
@@ -564,7 +612,7 @@
     // the URL to return to.
     const sendWorkspaceHello = () => {
       chrome.runtime.sendMessage(
-        { action: 'workspace_hello', model: config.source },
+        { action: 'workspace_hello', model: config.source, private: isPrivateNow(config) },
         (response) => {
           void chrome.runtime.lastError;
           if (response && response.navigate) location.href = response.navigate;
@@ -589,10 +637,16 @@
         sendResponse({ success: true });
       } else if (request.action === 'new_chat') {
         // A new chat is a brand new conversation; forget the turns we tagged in
-        // the old one so the repair observer doesn't chase detached nodes.
+        // the old one so the repair observer doesn't chase detached nodes. It
+        // also leaves private mode (the sites return to a normal fresh chat),
+        // so the private guard resets with it.
         turnLedger.length = 0;
+        privateModeEntered = false;
         config.newChat();
         sendResponse({ success: true });
+      } else if (request.action === 'enter_private_chat') {
+        enterPrivateChat(config, (ok) => sendResponse({ success: ok }));
+        return true; // responds asynchronously (polls for the site's button)
       } else if (request.action === 'reattach_turns') {
         reattachTurns(request.turns);
         sendResponse({ success: true });

@@ -6,6 +6,16 @@ MultiPrompt.init({
   sendSelector: 'button[data-testid="send-button"], button[aria-label*="Send"]',
   // The rendered user-message element we stamp with the shared turn id.
   userTurnSelector: '[data-message-author-role="user"]',
+  // Temporary-chat toggle in the conversation header.
+  findPrivateButton() {
+    return document.querySelector('button[aria-label^="Turn on temporary" i]');
+  },
+  // ChatGPT exposes a detectable on-state: the URL gains ?temporary-chat=true
+  // and the header button flips to "Turn off temporary chat".
+  isPrivateChat() {
+    if (new URLSearchParams(location.search).get('temporary-chat') === 'true') return true;
+    return !!document.querySelector('button[aria-label^="Turn off temporary" i]');
+  },
   newChat() {
     let newChatBtn = document.querySelector('a[data-testid="new-chat-button"]') ||
                      document.querySelector('button[aria-label="New chat"]');

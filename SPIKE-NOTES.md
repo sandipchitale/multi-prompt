@@ -201,6 +201,31 @@ bookmark at the live conversation permalink (re-persisting on every stable repor
 to survive the create-vs-report race). `initWorkspace` seeds the entry with
 `order`/`folderId`/`bookmarks`/`metaBookmarkId`.
 
+### Private / temporary chat mode (implemented)
+All three chatbots expose a private/temporary-chat toggle on their fresh-chat
+launcher (Gemini `mat-icon[gemini_chat_temp]`, Claude's ghost-icon button,
+ChatGPT `button[aria-label^="Turn on temporary"]`). A popup checkbox
+(`privateChatPref`) makes every New Chat — both modes — click that toggle
+automatically as soon as each chat is ready; the workspace bar also gets a
+global **Private** pill that switches all panes on demand. Key mechanics:
+- The site toggles are TOGGLES: clicking twice exits private mode. The content
+  script keeps a page-lifetime guard (`privateModeEntered`, reset by
+  `new_chat`) so repeated `enter_private_chat` requests (launch auto-privatize
+  + bar button + heartbeat re-registration) are idempotent. ChatGPT also has a
+  detectable on-state (`?temporary-chat=true` / "Turn off temporary chat"),
+  used as ground truth for verification.
+- Private chats are deliberately never saved (their permalinks are ephemeral):
+  `doRecordLedgerTurn`, `doPersistWorkspaceTurn`, and `captureWorkspaceUrl`
+  all skip when the session/tab is private — and going private from the bar
+  also disables the pane URL-restore steering (pre-filled `navigated`), so a
+  reloaded pane is not steered back to an abandoned conversation.
+- Per-pane truth in the titlebar: each pane's hello heartbeat reports its
+  private state; the workspace shows a small ghost glyph next to the
+  connection dot, and the bar pill lights up once every connected pane is
+  actually private.
+- Reopened saved sessions never auto-privatize (they are existing, non-private
+  conversations); the bar button remains available as an explicit action.
+
 ### Still out of scope (follow-ups)
 In-pane typing broadcast, per-pane new-chat/reload controls, drag-to-reorder
 panes, Safari fallback messaging (no DNR modifyHeaders there — window tiling

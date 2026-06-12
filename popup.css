@@ -239,6 +239,83 @@ h2 {
   box-shadow: 0 0 10px var(--accent-glow);
 }
 
+/* Private/temporary-chat toggle: a full-width card matching the model cards'
+   pill + switch idiom. The checkbox itself is visually hidden but keeps focus,
+   so the row stays keyboard operable. */
+.private-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px;
+  cursor: pointer;
+  border-radius: var(--border-radius);
+  background-color: var(--panel-bg);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-sizing: border-box;
+}
+
+[data-theme="light"] .private-row {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.private-row:hover {
+  border-color: rgba(90, 50, 250, 0.3);
+}
+
+.private-row input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+.private-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: color 0.2s ease;
+}
+
+.private-label {
+  flex: 1;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.private-hint {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.private-row:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.private-row:has(input:checked) .private-icon {
+  color: var(--accent);
+}
+
+.private-row:has(input:checked) .toggle-indicator {
+  background-color: var(--accent);
+}
+
+.private-row:has(input:checked) .toggle-indicator::after {
+  transform: translateX(14px);
+  background-color: white;
+}
+
+.private-row:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .status-msg {
   font-size: 0.8rem;
   padding: 6px 10px;
