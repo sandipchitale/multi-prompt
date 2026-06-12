@@ -11,6 +11,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const MODEL_TITLES = { gemini: 'Gemini', claude: 'Claude', chatgpt: 'ChatGPT' };
 
+  // Inline SVG icons for the tile titlebars — text glyphs (–, ⛶, …) render at
+  // inconsistent optical sizes per platform; these stay fixed and inherit the
+  // button's color via currentColor.
+  const SVG_OPEN = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">';
+  const ICONS = {
+    minus: SVG_OPEN + '<path d="M2.5 6h7"/></svg>',
+    plus: SVG_OPEN + '<path d="M6 2.5v7M2.5 6h7"/></svg>',
+    maximize: SVG_OPEN + '<rect x="2" y="2" width="8" height="8" rx="1.5"/></svg>',
+    restore: SVG_OPEN + '<path d="M4.5 3.5v-1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/>' +
+      '<rect x="1.5" y="4.5" width="6" height="6" rx="1"/></svg>',
+    grip: '<svg width="8" height="12" viewBox="0 0 8 12" fill="currentColor">' +
+      '<circle cx="2.5" cy="2.5" r="1"/><circle cx="5.5" cy="2.5" r="1"/>' +
+      '<circle cx="2.5" cy="6" r="1"/><circle cx="5.5" cy="6" r="1"/>' +
+      '<circle cx="2.5" cy="9.5" r="1"/><circle cx="5.5" cy="9.5" r="1"/></svg>',
+  };
+
   // --- Theme: follow the popup's setting (auto / light / dark) --------------
   let themePref = 'auto';
 
@@ -138,9 +155,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const spacer = document.createElement('span');
       spacer.className = 'pane-title-spacer';
-      const collapseBtn = makePaneBtn('–', 'Collapse this tile');
-      const maxBtn = makePaneBtn('⛶', 'Maximize this tile');
-      title.append(name, dot, badge, spacer, collapseBtn, maxBtn);
+      const grip = document.createElement('span');
+      grip.className = 'pane-grip';
+      grip.innerHTML = ICONS.grip;
+      const collapseBtn = makePaneBtn('minus', 'Collapse this tile');
+      const maxBtn = makePaneBtn('maximize', 'Maximize this tile');
+      title.append(grip, name, dot, badge, spacer, collapseBtn, maxBtn);
 
       const frame = document.createElement('iframe');
       frame.src = response.urls[model];
@@ -161,12 +181,14 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       maxBtn.addEventListener('click', () => toggleMaximize(p));
       title.addEventListener('mousedown', (e) => startTitleDrag(e, p));
-      // Double-click on the titlebar: expands the tile when it's a collapsed
-      // sliver, otherwise toggles maximize (same as the ⛶/❐ button).
+      // Double-click on an expanded titlebar toggles maximize (same as the
+      // button). Skipped right after a click-expand of the sliver, so the
+      // first click's expansion doesn't cascade into a surprise maximize.
       title.addEventListener('dblclick', (e) => {
         if (e.target.closest('button')) return;
-        if (p.collapsed) expandPane(p);
-        else toggleMaximize(p);
+        if (p.collapsed) { expandPane(p); return; }
+        if (p.clickExpandedAt && Date.now() - p.clickExpandedAt < 600) return;
+        toggleMaximize(p);
       });
     });
     rebuildSplitters();
@@ -225,11 +247,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- Tile titlebar controls: collapse, maximize, drag-to-reorder -----------
-  function makePaneBtn(glyph, tip) {
+  function makePaneBtn(icon, tip) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'pane-btn';
-    b.textContent = glyph;
+    b.innerHTML = ICONS[icon];
     b.title = tip;
     // Don't let a button press start a titlebar drag.
     b.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -261,7 +283,7 @@ document.addEventListener('DOMContentLoaded', () => {
     p.collapsed = collapsed;
     p.el.classList.toggle('collapsed', collapsed);
     p.el.style.flex = collapsed ? '0 0 28px' : p.savedGrow + ' 1 0';
-    p.collapseBtn.textContent = collapsed ? '+' : '–';
+    p.collapseBtn.innerHTML = ICONS[collapsed ? 'plus' : 'minus'];
     p.collapseBtn.title = collapsed ? 'Expand this tile' : 'Collapse this tile';
     p.maxBtn.style.display = collapsed ? 'none' : '';
   }
@@ -298,7 +320,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
     maximizedModel = p.model;
-    p.maxBtn.textContent = '❐';
+    p.maxBtn.innerHTML = ICONS.restore;
     p.maxBtn.title = 'Restore the tiled layout';
     rebuildSplitters();
   }
@@ -310,7 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const maxed = panes.find((q) => q.model === maximizedModel);
     maximizedModel = null;
     if (maxed) {
-      maxed.maxBtn.textContent = '⛶';
+      maxed.maxBtn.innerHTML = ICONS.maximize;
       maxed.maxBtn.title = 'Maximize this tile';
     }
     saved.forEach((s) => {
@@ -366,6 +388,12 @@ document.addEventListener('DOMContentLoaded', () => {
       window.removeEventListener('mouseup', onUp, true);
       if (overlay) overlay.remove();
       p.el.classList.remove('dragging');
+      // A plain click (no drag) on a collapsed sliver expands it — the whole
+      // strip is the target, not just the small + button.
+      if (!dragging && p.collapsed) {
+        p.clickExpandedAt = Date.now();
+        expandPane(p);
+      }
     };
     window.addEventListener('mousemove', onMove, true);
     window.addEventListener('mouseup', onUp, true);
@@ -391,10 +419,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }, 2000);
 
+  // The prompt grows with its content (Shift+Enter) up to ~4 lines; the shell
+  // relaxes from a pill to a rounded rect once it's multi-line.
+  const promptShell = document.querySelector('.prompt-shell');
+  const PROMPT_MAX_HEIGHT = 100;
+
+  function autosizePrompt() {
+    promptEl.style.height = 'auto';
+    const h = Math.min(promptEl.scrollHeight, PROMPT_MAX_HEIGHT);
+    promptEl.style.height = h + 'px';
+    promptShell.classList.toggle('multiline', h > 44);
+  }
+
+  promptEl.addEventListener('input', autosizePrompt);
+
   function send() {
     const text = promptEl.value.trim();
     if (!text) return;
     sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending…';
     statusEl.textContent = '';
     paneResults = {};
     panes.forEach((p) => { paneResults[p.model] = 'pending'; });
@@ -402,6 +445,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     chrome.runtime.sendMessage({ action: 'workspace_broadcast', prompt: text }, (response) => {
       sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
       if (chrome.runtime.lastError || !response || response.status !== 'success') {
         paneResults = {};
         renderResults();
@@ -416,6 +460,7 @@ document.addEventListener('DOMContentLoaded', () => {
       (response.failed || []).forEach((m) => { paneResults[m] = false; });
       renderResults();
       promptEl.value = '';
+      autosizePrompt();
       promptEl.focus();
     });
   }

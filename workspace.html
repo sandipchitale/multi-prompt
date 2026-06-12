@@ -67,12 +67,12 @@
     }
     .pane-title-spacer { flex: 1; }
     .pane-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
       border: none;
       background: transparent;
       color: var(--muted);
-      font: inherit;
-      font-size: 13px;
-      line-height: 1;
       width: 20px;
       height: 20px;
       padding: 0;
@@ -80,6 +80,16 @@
       cursor: pointer;
     }
     .pane-btn:hover { background: var(--border); color: var(--text); }
+    .pane-btn svg { display: block; }
+    /* Drag handle hint: tiles reorder by dragging the titlebar; the grip makes
+       that discoverable. Brightens when the titlebar is hovered. */
+    .pane-grip {
+      display: flex;
+      color: var(--muted);
+      opacity: 0.35;
+      transition: opacity 0.15s ease;
+    }
+    .pane h2:hover .pane-grip { opacity: 0.9; }
     /* Tile being dragged to a new position in the row. */
     .pane.dragging { opacity: 0.6; }
     .drag-overlay.reorder { cursor: grabbing; }
@@ -96,7 +106,13 @@
          labels of the expanded tiles next to it. */
       padding: 5px 4px 12px;
       border-bottom: none;
+      /* The whole strip is a click target for expanding, not just the +. */
+      cursor: pointer;
     }
+    .pane.collapsed h2:hover { background: rgba(124, 58, 237, 0.10); }
+    /* In the sliver the primary affordance is click-to-expand; the drag grip
+       would just clutter the strip. */
+    .pane.collapsed .pane-grip { display: none; }
     /* Keep the expand (+) button at the TOP of the sliver — the spacer would
        otherwise push it to the bottom, far from the titlebar row. */
     .pane.collapsed .pane-btn { order: -1; }
@@ -136,7 +152,7 @@
     .prompt-shell {
       flex: 1;
       display: flex;
-      align-items: center;
+      align-items: flex-end;
       gap: 8px;
       min-width: 0;
       box-sizing: border-box;
@@ -147,9 +163,14 @@
         linear-gradient(var(--panel), var(--panel)) padding-box,
         linear-gradient(120deg, #7c3aed, #d946ef, #06b6d4, #22c55e, #7c3aed) border-box;
       background-size: 100% 100%, 300% 300%;
-      animation: prompt-glow-pan 8s linear infinite;
       box-shadow: 0 0 12px rgba(124, 58, 237, 0.22);
       transition: box-shadow 0.2s ease;
+    }
+    /* When the prompt grows to multiple lines, a full pill looks broken —
+       relax to a rounded rect. */
+    .prompt-shell.multiline { border-radius: 24px; }
+    @media (prefers-reduced-motion: no-preference) {
+      .prompt-shell { animation: prompt-glow-pan 8s linear infinite; }
     }
     .prompt-shell:focus-within {
       box-shadow: 0 0 20px rgba(124, 58, 237, 0.38);
@@ -162,6 +183,8 @@
     #prompt {
       flex: 1;
       height: 40px;
+      max-height: 100px;
+      overflow-y: auto;
       resize: none;
       box-sizing: border-box;
       padding: 10px 0;
@@ -173,6 +196,7 @@
     #prompt:focus { outline: none; }
     #send {
       height: 38px;
+      min-width: 108px; /* fits the in-flight "Sending…" label without resizing */
       padding: 0 22px;
       border: none;
       border-radius: 999px;
@@ -235,7 +259,16 @@
       border-radius: 999px;
     }
     .theme-toggle label { cursor: pointer; }
-    .theme-toggle input { display: none; }
+    /* Visually hidden but still focusable, so the radio group stays keyboard
+       operable (arrow keys switch theme). */
+    .theme-toggle input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      margin: 0;
+      pointer-events: none;
+    }
     /* 44px inner pills inside the 54px group: the 4px gutter (+1px border)
        keeps the inner curves concentric with the outer rounded corner. */
     .theme-toggle span {
@@ -255,6 +288,18 @@
       background: #7c3aed;
       color: #fff;
       box-shadow: 0 0 8px rgba(124, 58, 237, 0.5);
+    }
+    /* Keyboard focus rings (mouse clicks don't trigger :focus-visible). */
+    .pane-btn:focus-visible,
+    #send:focus-visible,
+    #ws-export:focus-visible,
+    #ws-export-format:focus-visible {
+      outline: 2px solid #7c3aed;
+      outline-offset: 2px;
+    }
+    .theme-toggle input:focus-visible + span {
+      outline: 2px solid #7c3aed;
+      outline-offset: 2px;
     }
     .notice {
       margin: auto;
