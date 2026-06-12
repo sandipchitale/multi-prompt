@@ -20,32 +20,61 @@ document.addEventListener('DOMContentLoaded', () => {
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
   }
 
+  function checkThemeRadio() {
+    const radio = document.querySelector('input[name="theme"][value="' + themePref + '"]');
+    if (radio) radio.checked = true;
+  }
+
   chrome.storage.local.get(['themePref'], (result) => {
     themePref = result.themePref || 'auto';
     applyTheme();
+    checkThemeRadio();
+  });
+
+  document.querySelectorAll('input[name="theme"]').forEach((radio) => {
+    radio.addEventListener('change', (e) => {
+      themePref = e.target.value;
+      applyTheme();
+      chrome.storage.local.set({ themePref: themePref });
+    });
   });
 
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
+  // Also fires for changes made from the popup (or another workspace tab),
+  // keeping this tab's toggle in sync.
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === 'local' && changes.themePref) {
       themePref = changes.themePref.newValue || 'auto';
       applyTheme();
+      checkThemeRadio();
     }
   });
 
   // --- Per-pane broadcast results -------------------------------------------
   // 'pending' while a pane is still injecting; true/false once it reports
-  // whether the prompt's user turn actually rendered.
+  // whether the prompt's user turn actually rendered. Shown as a small badge
+  // in each pane's titlebar, next to the connection dot.
   let paneResults = {};
+  const paneBadges = {};
 
   function renderResults() {
-    const parts = Object.keys(paneResults).map((model) => {
+    Object.keys(paneBadges).forEach((model) => {
+      const badge = paneBadges[model];
+      if (!(model in paneResults)) {
+        badge.textContent = '';
+        badge.className = 'pane-result';
+        badge.title = '';
+        return;
+      }
       const state = paneResults[model];
-      const mark = state === 'pending' ? '…' : (state ? '✓' : '✗');
-      return (MODEL_TITLES[model] || model) + ' ' + mark;
+      badge.textContent = state === 'pending' ? '…' : (state ? '✓' : '✗');
+      badge.className = 'pane-result ' +
+        (state === 'pending' ? 'pending' : (state ? 'ok' : 'fail'));
+      badge.title = state === 'pending'
+        ? 'Sending the last prompt…'
+        : (state ? 'Last prompt delivered' : 'Last prompt did NOT reach this pane');
     });
-    statusEl.textContent = parts.join('   ');
   }
 
   // The background forwards each pane's injection result here, addressed only to
@@ -103,11 +132,15 @@ document.addEventListener('DOMContentLoaded', () => {
       dot.className = 'pane-dot';
       paneTitles[model] = dot;
 
+      const badge = document.createElement('span');
+      badge.className = 'pane-result';
+      paneBadges[model] = badge;
+
       const spacer = document.createElement('span');
       spacer.className = 'pane-title-spacer';
       const collapseBtn = makePaneBtn('–', 'Collapse this tile');
       const maxBtn = makePaneBtn('⛶', 'Maximize this tile');
-      title.append(name, dot, spacer, collapseBtn, maxBtn);
+      title.append(name, dot, badge, spacer, collapseBtn, maxBtn);
 
       const frame = document.createElement('iframe');
       frame.src = response.urls[model];
@@ -362,11 +395,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const text = promptEl.value.trim();
     if (!text) return;
     sendBtn.disabled = true;
-    statusEl.textContent = 'Sending…';
+    statusEl.textContent = '';
+    paneResults = {};
+    panes.forEach((p) => { paneResults[p.model] = 'pending'; });
+    renderResults();
 
     chrome.runtime.sendMessage({ action: 'workspace_broadcast', prompt: text }, (response) => {
       sendBtn.disabled = false;
       if (chrome.runtime.lastError || !response || response.status !== 'success') {
+        paneResults = {};
+        renderResults();
         statusEl.textContent = 'Failed: ' +
           (chrome.runtime.lastError
             ? chrome.runtime.lastError.message

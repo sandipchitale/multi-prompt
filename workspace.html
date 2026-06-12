@@ -117,33 +117,65 @@
       background: #ef4444;
       box-shadow: 0 0 5px rgba(239, 68, 68, 0.7);
     }
+    /* Last-broadcast result for this pane (… sending / ✓ delivered / ✗ failed). */
+    .pane-result { font-size: 11px; font-weight: 700; }
+    .pane-result.pending { color: var(--muted); }
+    .pane-result.ok { color: #22c55e; }
+    .pane-result.fail { color: #ef4444; }
     .pane iframe { flex: 1; width: 100%; border: 0; background: #fff; }
     .composer {
       display: flex;
-      gap: 10px;
       align-items: center;
-      padding: 10px 12px;
+      gap: 10px;
+      padding: 6px 12px;
       background: var(--panel);
       border-top: 1px solid var(--border);
     }
+    /* The shared prompt is the star: a full-width pill with a slowly drifting
+       multicolor border and a soft glow — eye-catching, not overpowering. */
+    .prompt-shell {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      box-sizing: border-box;
+      padding: 5px 5px 5px 20px;
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background:
+        linear-gradient(var(--panel), var(--panel)) padding-box,
+        linear-gradient(120deg, #7c3aed, #d946ef, #06b6d4, #22c55e, #7c3aed) border-box;
+      background-size: 100% 100%, 300% 300%;
+      animation: prompt-glow-pan 8s linear infinite;
+      box-shadow: 0 0 12px rgba(124, 58, 237, 0.22);
+      transition: box-shadow 0.2s ease;
+    }
+    .prompt-shell:focus-within {
+      box-shadow: 0 0 20px rgba(124, 58, 237, 0.38);
+    }
+    @keyframes prompt-glow-pan {
+      0%   { background-position: 0 0, 0% 50%; }
+      50%  { background-position: 0 0, 100% 50%; }
+      100% { background-position: 0 0, 0% 50%; }
+    }
     #prompt {
       flex: 1;
-      height: 44px;
+      height: 40px;
       resize: none;
       box-sizing: border-box;
-      padding: 10px 12px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--bg);
+      padding: 10px 0;
+      border: none;
+      background: transparent;
       color: inherit;
       font: inherit;
     }
-    #prompt:focus { outline: none; border-color: #7c3aed; }
+    #prompt:focus { outline: none; }
     #send {
-      height: 44px;
+      height: 38px;
       padding: 0 22px;
       border: none;
-      border-radius: 10px;
+      border-radius: 999px;
       background: linear-gradient(135deg, #7c3aed 0%, #d946ef 100%);
       color: #fff;
       font: inherit;
@@ -151,22 +183,38 @@
       cursor: pointer;
     }
     #send:disabled { opacity: 0.5; cursor: default; }
-    #status { font-size: 11px; color: var(--muted); max-width: 200px; }
-    .bar-spacer { flex: 1; }
+    /* Only used for whole-broadcast failures; per-pane results live in the
+       pane titlebars. Hidden when empty so it doesn't reserve row space. */
+    #status { font-size: 11px; color: #ef4444; max-width: 240px; }
+    #status:empty { display: none; }
+    /* Match the prompt pill's outer height (textarea 40 + 5px padding and 2px
+       border each side = 54) so the whole bottom bar reads as one row of pills. */
     #ws-export-format {
-      height: 44px;
+      height: 54px;
+      box-sizing: border-box;
       border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--bg);
+      border-radius: 999px;
       color: inherit;
       font: inherit;
-      padding: 0 8px;
+      padding: 0 42px 0 24px;
+      /* Native selects pin their arrow against the right edge, which collides
+         with the pill curve — draw our own chevron, inset from the border. */
+      appearance: none;
+      -webkit-appearance: none;
+      background-color: var(--bg);
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%235d6478' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 20px center;
+    }
+    [data-theme="dark"] #ws-export-format {
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%238a90a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
     }
     #ws-export {
-      height: 44px;
-      padding: 0 16px;
+      height: 54px;
+      box-sizing: border-box;
+      padding: 0 20px;
       border: 1px solid var(--border);
-      border-radius: 10px;
+      border-radius: 999px;
       background: transparent;
       color: inherit;
       font: inherit;
@@ -174,6 +222,40 @@
       cursor: pointer;
     }
     #ws-export:disabled { opacity: 0.5; cursor: default; }
+    /* Theme selector pill, matching the popup's segmented toggle. */
+    .theme-toggle {
+      height: 54px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 4px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+    }
+    .theme-toggle label { cursor: pointer; }
+    .theme-toggle input { display: none; }
+    /* 44px inner pills inside the 54px group: the 4px gutter (+1px border)
+       keeps the inner curves concentric with the outer rounded corner. */
+    .theme-toggle span {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      box-sizing: border-box;
+      padding: 0 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      transition: all 0.2s ease;
+    }
+    .theme-toggle input:checked + span {
+      background: #7c3aed;
+      color: #fff;
+      box-shadow: 0 0 8px rgba(124, 58, 237, 0.5);
+    }
     .notice {
       margin: auto;
       max-width: 480px;
@@ -187,16 +269,31 @@
     <div class="notice">Loading panes…</div>
   </div>
   <div class="composer">
-    <textarea id="prompt"
-      placeholder="Type a prompt — Enter sends it to every pane (Shift+Enter for a newline)"></textarea>
-    <button id="send" type="button">Send</button>
+    <div class="prompt-shell">
+      <textarea id="prompt"
+        placeholder="Type a prompt — Enter sends it to every pane (Shift+Enter for a newline)"></textarea>
+      <button id="send" type="button">Send</button>
+    </div>
     <span id="status"></span>
-    <span class="bar-spacer"></span>
     <select id="ws-export-format" title="Export format">
       <option value="markdown">Markdown (.md)</option>
       <option value="pdf">PDF / Print (.pdf)</option>
     </select>
     <button id="ws-export" type="button" title="Export this tab's chats">Export</button>
+    <div class="theme-toggle" title="Select Theme">
+      <label>
+        <input type="radio" name="theme" value="auto" checked />
+        <span>Auto</span>
+      </label>
+      <label>
+        <input type="radio" name="theme" value="light" />
+        <span>☀️</span>
+      </label>
+      <label>
+        <input type="radio" name="theme" value="dark" />
+        <span>🌙</span>
+      </label>
+    </div>
   </div>
   <script src="align.js"></script>
   <script src="workspace.js"></script>
