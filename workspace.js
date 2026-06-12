@@ -18,7 +18,6 @@ document.addEventListener('DOMContentLoaded', () => {
     'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">';
   const ICONS = {
     minus: SVG_OPEN + '<path d="M2.5 6h7"/></svg>',
-    plus: SVG_OPEN + '<path d="M6 2.5v7M2.5 6h7"/></svg>',
     maximize: SVG_OPEN + '<rect x="2" y="2" width="8" height="8" rx="1.5"/></svg>',
     restore: SVG_OPEN + '<path d="M4.5 3.5v-1a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1"/>' +
       '<rect x="1.5" y="4.5" width="6" height="6" rx="1"/></svg>',
@@ -158,6 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const grip = document.createElement('span');
       grip.className = 'pane-grip';
       grip.innerHTML = ICONS.grip;
+      grip.title = 'Drag to reorder';
       const collapseBtn = makePaneBtn('minus', 'Collapse this tile');
       const maxBtn = makePaneBtn('maximize', 'Maximize this tile');
       title.append(grip, name, dot, badge, spacer, collapseBtn, maxBtn);
@@ -171,10 +171,11 @@ document.addEventListener('DOMContentLoaded', () => {
       panesEl.appendChild(pane);
 
       const p = {
-        model, el: pane, collapseBtn, maxBtn,
+        model, el: pane, titleEl: title, collapseBtn, maxBtn,
         collapsed: false, savedGrow: 1,
       };
       panes.push(p);
+      title.title = 'Drag to reorder • double-click to maximize';
 
       collapseBtn.addEventListener('click', () => {
         if (p.collapsed) expandPane(p); else collapsePane(p);
@@ -182,8 +183,8 @@ document.addEventListener('DOMContentLoaded', () => {
       maxBtn.addEventListener('click', () => toggleMaximize(p));
       title.addEventListener('mousedown', (e) => startTitleDrag(e, p));
       // Double-click on an expanded titlebar toggles maximize (same as the
-      // button). Skipped right after a click-expand of the sliver, so the
-      // first click's expansion doesn't cascade into a surprise maximize.
+      // button). Skipped right after a click-expand of a sliver, so the first
+      // click's expansion doesn't cascade into a surprise maximize.
       title.addEventListener('dblclick', (e) => {
         if (e.target.closest('button')) return;
         if (p.collapsed) { expandPane(p); return; }
@@ -206,14 +207,32 @@ document.addEventListener('DOMContentLoaded', () => {
     return s;
   }
 
-  function startSplitterDrag(e, splitter) {
-    e.preventDefault();
-    const left = splitter.previousElementSibling;
-    const right = splitter.nextElementSibling;
-    if (!left || !right) return;
+  // Walks siblings outward from a splitter to the nearest expanded pane in
+  // the given direction, skipping collapsed slivers (and other splitters).
+  function nearestExpanded(el, dir) {
+    let cur = el;
+    while (cur) {
+      if (cur.classList.contains('pane') && !paneFor(cur).collapsed) return cur;
+      cur = dir < 0 ? cur.previousElementSibling : cur.nextElementSibling;
+    }
+    return null;
+  }
 
-    const panes = Array.from(panesEl.querySelectorAll('.pane'));
-    const totalGrow = panes.reduce((a, p) => a + (parseFloat(p.style.flexGrow) || 1), 0);
+  function startSplitterDrag(e, splitter) {
+    const left = nearestExpanded(splitter.previousElementSibling, -1);
+    const right = nearestExpanded(splitter.nextElementSibling, +1);
+    if (!left || !right) return;
+    splitter.classList.add('active');
+    startGrowDrag(e, left, right, () => splitter.classList.remove('active'));
+  }
+
+  // Shared resize-drag: shifts flex-grow between two (not necessarily
+  // adjacent) expanded panes. Used by the splitters and by collapsed slivers,
+  // which act as splitters for their nearest expanded neighbours.
+  function startGrowDrag(e, left, right, onDone) {
+    e.preventDefault();
+    const expanded = domPanes().filter((el) => !paneFor(el).collapsed);
+    const totalGrow = expanded.reduce((a, el) => a + (parseFloat(el.style.flexGrow) || 1), 0);
     const rowWidth = panesEl.getBoundingClientRect().width;
     if (rowWidth <= 0) return;
     const minGrow = totalGrow * 0.08; // keep every pane at least ~8% wide
@@ -222,12 +241,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const leftStart = parseFloat(left.style.flexGrow) || 1;
     const rightStart = parseFloat(right.style.flexGrow) || 1;
 
-    splitter.classList.add('active');
-    const overlay = document.createElement('div');
-    overlay.className = 'drag-overlay';
-    document.body.appendChild(overlay);
+    // The overlay is created lazily on first movement: if it went up on
+    // mousedown, the second click of a double-click would land on it instead
+    // of the titlebar, and dblclick-to-expand on slivers would never fire.
+    let overlay = null;
 
     const onMove = (ev) => {
+      if (!overlay) {
+        if (Math.abs(ev.clientX - startX) < 3) return;
+        overlay = document.createElement('div');
+        overlay.className = 'drag-overlay';
+        document.body.appendChild(overlay);
+      }
       let dGrow = (ev.clientX - startX) * totalGrow / rowWidth;
       let lg = leftStart + dGrow;
       let rg = rightStart - dGrow;
@@ -239,8 +264,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const onUp = () => {
       window.removeEventListener('mousemove', onMove, true);
       window.removeEventListener('mouseup', onUp, true);
-      splitter.classList.remove('active');
-      overlay.remove();
+      if (overlay) overlay.remove();
+      if (onDone) onDone();
     };
     window.addEventListener('mousemove', onMove, true);
     window.addEventListener('mouseup', onUp, true);
@@ -266,16 +291,14 @@ document.addEventListener('DOMContentLoaded', () => {
     return panes.find((p) => p.el === el);
   }
 
-  // Splitters only make sense between two expanded neighbours (a collapsed
-  // sliver has a fixed width), so re-derive them from the current DOM order
-  // after every reorder / collapse / expand.
+  // Splitters sit between every adjacent pair of tiles, collapsed or not —
+  // a splitter next to a fixed-width sliver resizes the nearest expanded
+  // tiles on either side instead. Re-derived from DOM order after reorders.
   function rebuildSplitters() {
     panesEl.querySelectorAll('.splitter').forEach((s) => s.remove());
     const els = domPanes();
     for (let i = 1; i < els.length; i++) {
-      if (!paneFor(els[i - 1]).collapsed && !paneFor(els[i]).collapsed) {
-        panesEl.insertBefore(makeSplitter(), els[i]);
-      }
+      panesEl.insertBefore(makeSplitter(), els[i]);
     }
   }
 
@@ -283,9 +306,13 @@ document.addEventListener('DOMContentLoaded', () => {
     p.collapsed = collapsed;
     p.el.classList.toggle('collapsed', collapsed);
     p.el.style.flex = collapsed ? '0 0 28px' : p.savedGrow + ' 1 0';
-    p.collapseBtn.innerHTML = ICONS[collapsed ? 'plus' : 'minus'];
-    p.collapseBtn.title = collapsed ? 'Expand this tile' : 'Collapse this tile';
+    // The sliver needs no buttons: a click anywhere on it expands, the grip
+    // reorders, and the splitters around it handle resizing.
+    p.collapseBtn.style.display = collapsed ? 'none' : '';
     p.maxBtn.style.display = collapsed ? 'none' : '';
+    p.titleEl.title = collapsed
+      ? 'Click to expand • drag the grip to reorder'
+      : 'Drag to reorder • double-click to maximize';
   }
 
   function collapsePane(p) {
@@ -389,7 +416,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (overlay) overlay.remove();
       p.el.classList.remove('dragging');
       // A plain click (no drag) on a collapsed sliver expands it — the whole
-      // strip is the target, not just the small + button.
+      // strip is the target.
       if (!dragging && p.collapsed) {
         p.clickExpandedAt = Date.now();
         expandPane(p);

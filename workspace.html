@@ -88,6 +88,7 @@
       color: var(--muted);
       opacity: 0.35;
       transition: opacity 0.15s ease;
+      cursor: grab;
     }
     .pane h2:hover .pane-grip { opacity: 0.9; }
     /* Tile being dragged to a new position in the row. */
@@ -102,20 +103,16 @@
     .pane.collapsed h2 {
       flex: 1;
       writing-mode: vertical-rl;
-      /* Small top padding so the expand (+) button lines up with the titlebar
-         labels of the expanded tiles next to it. */
-      padding: 5px 4px 12px;
+      /* 9px top padding centres the 12px grip on the same line as the grips
+         in the neighbouring expanded titlebars (5px padding + 20px row). */
+      padding: 9px 4px 12px;
       border-bottom: none;
-      /* The whole strip is a click target for expanding, not just the +. */
+      /* A click anywhere on the strip expands the tile. */
       cursor: pointer;
     }
     .pane.collapsed h2:hover { background: rgba(124, 58, 237, 0.10); }
-    /* In the sliver the primary affordance is click-to-expand; the drag grip
-       would just clutter the strip. */
-    .pane.collapsed .pane-grip { display: none; }
-    /* Keep the expand (+) button at the TOP of the sliver — the spacer would
-       otherwise push it to the bottom, far from the titlebar row. */
-    .pane.collapsed .pane-btn { order: -1; }
+    /* Sliver stacking: grip (reorder) on top, then the rotated title. */
+    .pane.collapsed .pane-grip { order: -1; }
     .pane-dot {
       display: inline-block;
       width: 9px;
