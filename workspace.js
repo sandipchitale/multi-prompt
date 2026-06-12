@@ -68,6 +68,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Pane title elements by model, for the connection indicators below.
   const paneTitles = {};
 
+  // Tile records ({ model, el, collapseBtn, maxBtn, collapsed, savedGrow }).
+  // Tile order, collapse, and maximize state are session-local — a reload
+  // returns to the default equal layout.
+  const panes = [];
+  let maximizedModel = null;  // model of the maximized tile, or null
+  let layoutBeforeMax = null; // per-tile { model, grow, collapsed } snapshot
+
   // A saved session to reopen travels in the page hash (#session=<folderId>),
   // so each workspace tab is self-describing.
   let folderId = null;
@@ -84,19 +91,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     panesEl.innerHTML = '';
-    response.order.forEach((model, i) => {
-      if (i > 0) panesEl.appendChild(makeSplitter());
-
+    response.order.forEach((model) => {
       const pane = document.createElement('div');
       pane.className = 'pane';
       pane.style.flex = '1 1 0'; // equal share; splitters adjust flex-grow
 
       const title = document.createElement('h2');
-      title.append(MODEL_TITLES[model] || model, ' ');
+      const name = document.createElement('span');
+      name.textContent = MODEL_TITLES[model] || model;
       const dot = document.createElement('span');
       dot.className = 'pane-dot';
-      title.appendChild(dot);
       paneTitles[model] = dot;
+
+      const spacer = document.createElement('span');
+      spacer.className = 'pane-title-spacer';
+      const collapseBtn = makePaneBtn('–', 'Collapse this tile');
+      const maxBtn = makePaneBtn('⛶', 'Maximize this tile');
+      title.append(name, dot, spacer, collapseBtn, maxBtn);
 
       const frame = document.createElement('iframe');
       frame.src = response.urls[model];
@@ -105,7 +116,27 @@ document.addEventListener('DOMContentLoaded', () => {
       pane.appendChild(title);
       pane.appendChild(frame);
       panesEl.appendChild(pane);
+
+      const p = {
+        model, el: pane, collapseBtn, maxBtn,
+        collapsed: false, savedGrow: 1,
+      };
+      panes.push(p);
+
+      collapseBtn.addEventListener('click', () => {
+        if (p.collapsed) expandPane(p); else collapsePane(p);
+      });
+      maxBtn.addEventListener('click', () => toggleMaximize(p));
+      title.addEventListener('mousedown', (e) => startTitleDrag(e, p));
+      // Double-click on the titlebar: expands the tile when it's a collapsed
+      // sliver, otherwise toggles maximize (same as the ⛶/❐ button).
+      title.addEventListener('dblclick', (e) => {
+        if (e.target.closest('button')) return;
+        if (p.collapsed) expandPane(p);
+        else toggleMaximize(p);
+      });
     });
+    rebuildSplitters();
     promptEl.focus();
   });
 
@@ -155,6 +186,153 @@ document.addEventListener('DOMContentLoaded', () => {
       window.removeEventListener('mouseup', onUp, true);
       splitter.classList.remove('active');
       overlay.remove();
+    };
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('mouseup', onUp, true);
+  }
+
+  // --- Tile titlebar controls: collapse, maximize, drag-to-reorder -----------
+  function makePaneBtn(glyph, tip) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pane-btn';
+    b.textContent = glyph;
+    b.title = tip;
+    // Don't let a button press start a titlebar drag.
+    b.addEventListener('mousedown', (e) => e.stopPropagation());
+    return b;
+  }
+
+  function domPanes() {
+    return Array.from(panesEl.querySelectorAll('.pane'));
+  }
+
+  function paneFor(el) {
+    return panes.find((p) => p.el === el);
+  }
+
+  // Splitters only make sense between two expanded neighbours (a collapsed
+  // sliver has a fixed width), so re-derive them from the current DOM order
+  // after every reorder / collapse / expand.
+  function rebuildSplitters() {
+    panesEl.querySelectorAll('.splitter').forEach((s) => s.remove());
+    const els = domPanes();
+    for (let i = 1; i < els.length; i++) {
+      if (!paneFor(els[i - 1]).collapsed && !paneFor(els[i]).collapsed) {
+        panesEl.insertBefore(makeSplitter(), els[i]);
+      }
+    }
+  }
+
+  function setCollapsed(p, collapsed) {
+    p.collapsed = collapsed;
+    p.el.classList.toggle('collapsed', collapsed);
+    p.el.style.flex = collapsed ? '0 0 28px' : p.savedGrow + ' 1 0';
+    p.collapseBtn.textContent = collapsed ? '+' : '–';
+    p.collapseBtn.title = collapsed ? 'Expand this tile' : 'Collapse this tile';
+    p.maxBtn.style.display = collapsed ? 'none' : '';
+  }
+
+  function collapsePane(p) {
+    if (maximizedModel === p.model) restoreLayout();
+    if (!p.collapsed) p.savedGrow = parseFloat(p.el.style.flexGrow) || 1;
+    setCollapsed(p, true);
+    rebuildSplitters();
+  }
+
+  function expandPane(p) {
+    // Expanding any sliver while a tile is maximized exits maximize and
+    // brings back the whole pre-maximize layout (which re-expands this tile).
+    if (maximizedModel) { restoreLayout(); return; }
+    setCollapsed(p, false);
+    rebuildSplitters();
+  }
+
+  function toggleMaximize(p) {
+    if (maximizedModel === p.model) { restoreLayout(); return; }
+    if (maximizedModel) restoreLayout();
+    layoutBeforeMax = panes.map((q) => ({
+      model: q.model,
+      grow: q.collapsed ? q.savedGrow : (parseFloat(q.el.style.flexGrow) || 1),
+      collapsed: q.collapsed,
+    }));
+    panes.forEach((q) => {
+      if (q === p) {
+        if (q.collapsed) setCollapsed(q, false);
+      } else {
+        if (!q.collapsed) q.savedGrow = parseFloat(q.el.style.flexGrow) || 1;
+        setCollapsed(q, true);
+      }
+    });
+    maximizedModel = p.model;
+    p.maxBtn.textContent = '❐';
+    p.maxBtn.title = 'Restore the tiled layout';
+    rebuildSplitters();
+  }
+
+  function restoreLayout() {
+    if (!layoutBeforeMax) return;
+    const saved = layoutBeforeMax;
+    layoutBeforeMax = null;
+    const maxed = panes.find((q) => q.model === maximizedModel);
+    maximizedModel = null;
+    if (maxed) {
+      maxed.maxBtn.textContent = '⛶';
+      maxed.maxBtn.title = 'Maximize this tile';
+    }
+    saved.forEach((s) => {
+      const q = panes.find((x) => x.model === s.model);
+      if (!q) return;
+      q.savedGrow = s.grow;
+      setCollapsed(q, s.collapsed);
+    });
+    rebuildSplitters();
+  }
+
+  // Dragging a titlebar reorders the tiles live (sortable-list style): once the
+  // pointer crosses the midpoint of another tile, the dragged tile moves past
+  // it in the DOM. Reuses the splitters' overlay trick so the iframes don't
+  // swallow mouse events mid-drag. A small threshold keeps plain clicks inert.
+  function startTitleDrag(e, p) {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let dragging = false;
+    let overlay = null;
+
+    const onMove = (ev) => {
+      if (!dragging) {
+        if (Math.abs(ev.clientX - startX) < 5 && Math.abs(ev.clientY - startY) < 5) return;
+        dragging = true;
+        p.el.classList.add('dragging');
+        overlay = document.createElement('div');
+        overlay.className = 'drag-overlay reorder';
+        document.body.appendChild(overlay);
+      }
+      const els = domPanes();
+      const idx = els.indexOf(p.el);
+      for (let i = 0; i < els.length; i++) {
+        if (i === idx) continue;
+        const r = els[i].getBoundingClientRect();
+        const mid = r.left + r.width / 2;
+        if (i < idx && ev.clientX < mid) {
+          panesEl.insertBefore(p.el, els[i]);
+          rebuildSplitters();
+          break;
+        }
+        if (i > idx && ev.clientX > mid) {
+          panesEl.insertBefore(p.el, els[i].nextSibling);
+          rebuildSplitters();
+          break;
+        }
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('mouseup', onUp, true);
+      if (overlay) overlay.remove();
+      p.el.classList.remove('dragging');
     };
     window.addEventListener('mousemove', onMove, true);
     window.addEventListener('mouseup', onUp, true);

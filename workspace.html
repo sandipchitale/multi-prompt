@@ -52,13 +52,54 @@
     .pane { border-right: none; }
     .pane h2 {
       margin: 0;
-      padding: 7px 12px;
+      padding: 5px 8px 5px 12px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex: 0 0 auto;
       font-size: 12px;
       font-weight: 600;
       letter-spacing: 0.02em;
       background: var(--panel);
       border-bottom: 1px solid var(--border);
+      cursor: grab;
+      user-select: none;
     }
+    .pane-title-spacer { flex: 1; }
+    .pane-btn {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      line-height: 1;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .pane-btn:hover { background: var(--border); color: var(--text); }
+    /* Tile being dragged to a new position in the row. */
+    .pane.dragging { opacity: 0.6; }
+    .drag-overlay.reorder { cursor: grabbing; }
+    /* Collapsed tile: a narrow sliver showing only the rotated titlebar. */
+    .pane.collapsed {
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+    .pane.collapsed iframe { display: none; }
+    .pane.collapsed h2 {
+      flex: 1;
+      writing-mode: vertical-rl;
+      /* Small top padding so the expand (+) button lines up with the titlebar
+         labels of the expanded tiles next to it. */
+      padding: 5px 4px 12px;
+      border-bottom: none;
+    }
+    /* Keep the expand (+) button at the TOP of the sliver — the spacer would
+       otherwise push it to the bottom, far from the titlebar row. */
+    .pane.collapsed .pane-btn { order: -1; }
     .pane-dot {
       display: inline-block;
       width: 9px;
