@@ -1587,22 +1587,53 @@ async function registerWorkspaceFrame(model, sender, framePrivate) {
   // conversation permalink on record, steer it back there — but defensively:
   //   • the saved URL must itself be a stable conversation URL, so a fresh chat
   //     (whose saved URL is the launcher) is never told to "restore" to the
-  //     launcher on every heartbeat, and
+  //     launcher on every heartbeat,
   //   • we steer to a given URL at most once, so a conversation URL that won't
-  //     "stick" (keeps bouncing to the launcher) can't drive a reload loop.
+  //     "stick" (keeps bouncing to the launcher) can't drive a reload loop, and
+  //   • the pane must have *stayed* on the launcher across a couple of heartbeats
+  //     before we act. Sending the first prompt naturally transits launcher →
+  //     conversation, and that new permalink IS the saved URL; a single transient
+  //     launcher reading during that hand-off (or Gemini's first-message reload)
+  //     would otherwise yank the page and reset the answer mid-stream. A genuine
+  //     reload leaves the pane parked on the launcher, so it lingers here; a
+  //     hand-off clears within one tick.
   // Reload loops here trip the sites' bot-detection (observed: Gemini CAPTCHA).
+  const STEER_DWELL_MS = 5000;
   const savedUrl = entry.urls && entry.urls[model];
   const alreadySteered = entry.navigated && entry.navigated[model] === savedUrl;
-  if (savedUrl && !alreadySteered &&
-      isStableConversationUrl(model, savedUrl) &&
-      sender.url && sender.url !== savedUrl &&
-      !isStableConversationUrl(model, sender.url)) {
+  const onLauncher = sender.url && sender.url !== savedUrl &&
+    !isStableConversationUrl(model, sender.url);
+  const restorable = savedUrl && !alreadySteered &&
+    isStableConversationUrl(model, savedUrl) && onLauncher;
+
+  if (restorable) {
+    const since = entry.launcherSince && entry.launcherSince[model];
+    const now = Date.now();
+    if (!since) {
+      // First heartbeat seeing the launcher — start the dwell timer, don't act.
+      await withWorkspaces((m) => {
+        if (!m[tabId]) return;
+        m[tabId].launcherSince = m[tabId].launcherSince || {};
+        m[tabId].launcherSince[model] = now;
+      });
+      return {};
+    }
+    if (now - since < STEER_DWELL_MS) return {}; // still inside the grace window
     await withWorkspaces((m) => {
       if (!m[tabId]) return;
       m[tabId].navigated = m[tabId].navigated || {};
       m[tabId].navigated[model] = savedUrl;
+      if (m[tabId].launcherSince) delete m[tabId].launcherSince[model];
     });
     return { navigate: savedUrl };
+  }
+
+  // Healthy (or nothing to restore yet): clear any pending dwell timer so a
+  // future genuine reload starts its grace window fresh.
+  if (entry.launcherSince && entry.launcherSince[model]) {
+    await withWorkspaces((m) => {
+      if (m[tabId] && m[tabId].launcherSince) delete m[tabId].launcherSince[model];
+    });
   }
   return {};
 }

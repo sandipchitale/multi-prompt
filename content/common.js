@@ -325,14 +325,31 @@
   // unavailable for a long while (a previous response still generating), so we
   // poll for a clickable one before resorting to a synthetic Enter — which
   // sites are free to ignore (isTrusted === false), making it a true last
-  // resort. After clicking we verify the editor actually emptied and retry the
-  // set+click cycle once, since framework re-renders can swallow a click.
+  // resort.
+  //
+  // After clicking we WATCH for proof the submit landed before ever resending,
+  // because a premature resend double-posts the prompt. The first prompt is the
+  // dangerous case: the site transitions from its launcher to a conversation
+  // (often a real navigation), so the rendered user turn can lag well past a
+  // second — long enough that a fixed-delay "is the composer still full?" check
+  // mistakes an in-flight send for a swallowed click and fires it again
+  // (observed on Gemini and Claude, worse with long prompts). Any one of these
+  // means it sent, and once sent we must never resend:
+  //   - a new user turn rendered, or
+  //   - the URL changed (a conversation permalink replaced the launcher), or
+  //   - the composer emptied (the site accepted and cleared the draft).
+  // Only when none of those happen for a sustained window AND the composer still
+  // holds the exact prompt do we treat the click as swallowed and retry once.
   function submitInjectedPrompt(config, field, prompt, turnId, beforeCount) {
-    let attempts = 0;
-    let retried = false;
+    let clickAttempts = 0;
+    let resent = false;
+    let settled = false;
     const expected = prompt.trim();
+    const startUrl = location.href;
 
     const finish = () => {
+      if (settled) return;
+      settled = true;
       // Report the outcome to the workspace status line (when we're a pane):
       // a freshly rendered user turn is the proof the prompt actually went out.
       tagNewUserTurn(turnId, beforeCount, (sent) => {
@@ -348,29 +365,48 @@
       setTimeout(() => { isProgrammaticInput = false; }, 500);
     };
 
-    const verify = () => {
-      const editor = findEditor(config);
-      if (!retried && editor && readPrompt(editor) === expected) {
-        retried = true;
-        dbg('send click was swallowed; re-inserting and retrying');
-        setEditorText(editor, prompt);
-        setTimeout(tryClick, 700);
-        return;
-      }
-      finish();
+    const sentSignal = () =>
+      getUserTurnEls().length > beforeCount || location.href !== startUrl;
+
+    const watch = () => {
+      let polls = 0;
+      const tick = () => {
+        if (settled) return;
+        if (sentSignal()) { finish(); return; }
+        const editor = findEditor(config);
+        if (!editor || readPrompt(editor) !== expected) {
+          // Composer no longer holds our prompt: the site accepted and cleared
+          // it. Don't resend; finish() confirms via the rendered turn.
+          finish();
+          return;
+        }
+        // Prompt still sitting in the composer and nothing has happened yet —
+        // keep watching (~8s) before concluding the click was swallowed.
+        if (polls++ < 16) { setTimeout(tick, 500); return; }
+        if (!resent) {
+          resent = true;
+          dbg('send did not land; re-inserting and retrying once');
+          setEditorText(editor, prompt);
+          setTimeout(tryClick, 700);
+          return;
+        }
+        finish();
+      };
+      tick();
     };
 
     const tryClick = () => {
+      if (settled) return;
       const btn = findSendButton(config);
       if (btn) {
         dbg('clicking send button');
         btn.click();
-        setTimeout(verify, 1500);
+        watch();
         return;
       }
       // ~45s of patience: long enough for a slow previous response to finish
       // streaming and the send button to come back.
-      if (attempts++ < 90) {
+      if (clickAttempts++ < 90) {
         setTimeout(tryClick, 500);
         return;
       }
@@ -409,10 +445,28 @@
       // Snapshot the user-turn count before we submit so the freshly rendered
       // one can be identified and tagged with the shared turn id.
       const beforeCount = getUserTurnEls().length;
+      const expected = prompt.trim();
 
       setEditorText(field, prompt);
 
-      setTimeout(() => submitInjectedPrompt(config, field, prompt, turnId, beforeCount), 800);
+      // Verify the fill actually took before submitting. Rich editors (Gemini's
+      // <rich-textarea>, ProseMirror) can silently reject an injected fill —
+      // especially a long prompt — leaving the composer empty and the send
+      // button disabled, so we'd otherwise poll a button that never enables
+      // (the "Gemini just sits on the empty launcher" symptom). Re-fill a few
+      // times, then submit regardless so a mis-reading editor still gets a try.
+      let fillAttempts = 0;
+      const submitWhenFilled = () => {
+        const f = findEditor(config) || field;
+        if (readPrompt(f) !== expected && fillAttempts++ < 3) {
+          dbg('composer did not accept the fill; re-inserting', fillAttempts);
+          setEditorText(f, prompt);
+          setTimeout(submitWhenFilled, 600);
+          return;
+        }
+        submitInjectedPrompt(config, f, prompt, turnId, beforeCount);
+      };
+      setTimeout(submitWhenFilled, 800);
     };
 
     tryInject();
@@ -615,7 +669,16 @@
         { action: 'workspace_hello', model: config.source, private: isPrivateNow(config) },
         (response) => {
           void chrome.runtime.lastError;
-          if (response && response.navigate) location.href = response.navigate;
+          // Only honour a "restore to your conversation" steer when THIS page is
+          // an empty launcher — i.e. a spontaneous reload dumped us back to a
+          // blank chat (zero rendered user turns). If any user turn is already
+          // present, a live conversation is loaded here, possibly mid-stream, and
+          // navigating would reset it (the cause of "Gemini answers, then resets"
+          // — Gemini streams the first answer while its URL still reads as the
+          // launcher, so the background keeps offering to restore the permalink).
+          if (response && response.navigate && getUserTurnEls().length === 0) {
+            location.href = response.navigate;
+          }
         }
       );
     };
