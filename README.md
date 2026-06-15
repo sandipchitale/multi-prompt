@@ -6,7 +6,7 @@ Multi-Prompt is a productivity tool that runs Gemini, Claude, and ChatGPT side-b
 
 It offers **two side-by-side layouts**:
 
-- **Tiled Windows** — each chatbot in its own tiled OS window (works in Chrome and Safari).
+- **Tiled Windows** — each chatbot in its own tiled OS window (works in Chrome and Safari). Optionally add a **shared prompt bar**: a thin, chrome-less app window docked across the bottom that broadcasts one prompt to every tiled window — the same "type once" experience as Tiled in a Tab, available on Safari too.
 - **Tiled in a Tab** — all chatbots as tiles inside a single browser tab, with a shared prompt box, resizable splitters, and full tile management: reorder, collapse, and maximize (experimental, Chrome only). You can open as many of these tabs as you like.
 
 ![Multi-Prompt Tiled](screenshots/multi-prompt.png)
@@ -21,14 +21,15 @@ It offers **two side-by-side layouts**:
   - **Reorder** tiles by dragging a titlebar (the grip dots mark the handle).
   - **Collapse** a tile to a narrow sliver with its rotated title — the chat stays loaded and still receives broadcasts; click the sliver to expand it again. At least one tile always stays expanded.
   - **Maximize** a tile (button or double-click its titlebar) to collapse the others to slivers; restore the same way — the exact previous layout, including widths, comes back. Titlebar buttons and splitters appear only in states where they can actually do something.
-- **Prompt Broadcasting:** In Tiled Windows mode, type natively in any chatbot and it replicates to the others. In Tiled in a Tab mode, type in the shared prompt box and it broadcasts to every pane.
+- **Prompt Broadcasting:** In Tiled Windows mode, type natively in any chatbot and it replicates to the others — or enable the **shared prompt bar** (see below) to type once and broadcast to every window. In Tiled in a Tab mode, type in the shared prompt box and it broadcasts to every pane.
+- **Shared Prompt Bar (Tiled Windows):** Tick **Shared prompt bar** in the popup before starting (or reopening) a Tiled Windows session and the extension docks a thin, chrome-less app window across the bottom of the screen, below the tiled chatbot windows. It mirrors the Tiled-in-a-Tab bottom bar: the glowing shared prompt pill with **Send**, a **Private** toggle, **Export** (+ format), the **theme** switch, and a row of per-model chips — each a name, a green/red **connection dot**, and a **… / ✓ / ✗** delivery badge for the last prompt. Type once and Enter broadcasts to every tiled window. This brings the "type once" experience to **Safari**, where Tiled in a Tab can't run. While the bar is shown it also **hosts the panel `[M]` button** (opens the popup), and the in-page floating `[M]` button is removed from each chatbot window so there's a single, obvious control. Sizing adapts per browser so the bar never clips. On Safari, **Close Tiles** also closes the standalone popup window the `[M]` button opens.
 - **Exact Cross-Model Alignment:** Each broadcast is stamped with a shared, hidden **turn id** (a `data-mp-turn` DOM attribute added _after_ the message is sent — never injected into the prompt text the model sees). Export uses these ids to group every model's answer to the same prompt exactly, even when two prompts are textually identical.
 - **Robust Text Injection:** Prompts are inserted into each site's rich editor (ProseMirror, Gemini's `rich-textarea`, Lexical) through a verified strategy chain — `execCommand` → synthetic paste → direct DOM. The fill is read back and re-applied if the editor silently rejects it (long prompts can otherwise be dropped), and submission waits for a real, clickable send button (so a prompt is never sent while a previous response is still streaming). After clicking, it **confirms the send actually landed** — a freshly rendered user turn, a conversation-permalink URL change, or a cleared composer — before ever retrying, so a site that's merely slow to clear its box never receives the same prompt twice.
 - **Automatic Session Saving:** Every conversation — in either mode — is auto-saved as a session, lazily on the first prompt (so opened-but-unused windows/tabs leave nothing behind). Sessions are stored as Chrome bookmark folders (or `chrome.storage.local` on Safari).
 - **Saved Sessions Picker:** Reopen any saved session from the popup — as **Tiled Windows** or **Tiled in a Tab** — rename it inline, or delete it. Reopening re-tiles the saved conversations in order and **reattaches** the original turn ids, so exported alignment survives a reload.
 - **Visual Tiling Order & Drag-to-Reorder:** Select chatbots and arrange their left-to-right order from one row in the popup. In Tiled Windows mode, dragging a card physically slides the open windows to match.
-- **Export Chat History:** Export from the popup, or from a Tiled-in-a-Tab tab's own **Export** button, into Markdown (`.md`) or a clean PDF / print template grouped by prompt.
-- **Theme:** Auto / Light / Dark — switchable from the popup or from the Tiled-in-a-Tab bottom bar, and kept in sync across the popup, the export view, and every workspace tab.
+- **Export Chat History:** Export from the popup, from a Tiled-in-a-Tab tab's own **Export** button, or from the **shared prompt bar's** Export button, into Markdown (`.md`) or a clean PDF / print template grouped by prompt.
+- **Theme:** Auto / Light / Dark — switchable from the popup, the Tiled-in-a-Tab bottom bar, or the shared prompt bar, and kept in sync across the popup, the export view, and every workspace tab and bar.
 
 ![Multi-Prompt Bookmarks](screenshots/multi-prompt-bookmarks.png)
 ![Multi-Prompt Export](screenshots/multi-prompt-export.png)
@@ -49,8 +50,12 @@ The chatbot sites forbid being embedded in a frame (via `X-Frame-Options` and CS
 Notes and limitations:
 
 - **Sign in first.** Logging in (and some session refreshes) can't happen inside an embedded frame; sign in to each chatbot in a normal tab beforehand. The panes then share that session.
-- **Chrome only.** Safari's `declarativeNetRequest` cannot remove *response* headers at all ([WebKit bug 275158](https://webkit.org/b/275158)), so Tiled in a Tab cannot work there; the extension probes for this at open time and explains, rather than showing dead panes. Tiled Windows remains the Safari path. Browsers that can remove response headers but lack per-tab (`tabIds`) rule scoping, such as Firefox, fall back to a rule that applies browser-wide — but still only while a workspace tab is open.
+- **Chrome only.** Safari's `declarativeNetRequest` cannot remove *response* headers at all ([WebKit bug 275158](https://webkit.org/b/275158)), so Tiled in a Tab cannot work there; the extension probes for this at open time and explains, rather than showing dead panes. Tiled Windows remains the Safari path — and the **shared prompt bar** gives it the same "type once, broadcast to all" experience without any framing. Browsers that can remove response headers but lack per-tab (`tabIds`) rule scoping, such as Firefox, fall back to a rule that applies browser-wide — but still only while a workspace tab is open.
 - **Security trade-off.** Removing the CSP also drops the framed page's own in-frame XSS protections. The rule is session-only, sub-frame-only, and pinned to the workspace tab to keep this contained.
+
+### Shared prompt bar (Tiled Windows)
+
+The bar (`promptbar.html` / `promptbar.js`) is an extension-owned `popup`-type window the service worker docks across the bottom of the work area, sizing the chatbot windows into the space above it. It needs **no** header-stripping (the chatbots stay in their own real windows), which is why it works on Safari. Its Send reuses the same `broadcast_prompt` path native typing uses — minting one shared turn id and injecting into every tiled window — so export alignment and the "never double-post" send confirmation work identically. Per-model delivery badges come from each window's content script reporting back, forwarded only to the bar.
 
 ### Durable sessions
 
@@ -86,6 +91,7 @@ background.js        Service worker: tiling, broadcast, turn ids, sessions, DNR 
 popup.html/.css/.js  Popup dashboard (model selection, modes, export, sessions)
 align.js             Shared cross-model turn alignment + export helpers
 workspace.html/.js   Tiled-in-a-Tab page: iframe tiles (reorder/collapse/maximize), splitters, shared prompt box, Export
+promptbar.html/.js   Tiled-Windows shared prompt bar: docked app window, broadcasts to every tiled window (Private/Export/theme)
 export.html/.js      Markdown → print/PDF transcript view
 content/common.js    Shared content-script logic (injection, tagging, extraction)
 content/{gemini,claude,chatgpt}.js   Per-site selectors and behaviours

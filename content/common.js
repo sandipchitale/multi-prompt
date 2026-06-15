@@ -270,9 +270,16 @@
   }
 
   function isVisible(el) {
-    if (!el || el.offsetParent === null) return false;
+    if (!el) return false;
     const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    // Fast path: a normal in-flow element with a layout box is visible.
+    if (el.offsetParent !== null) return true;
+    // offsetParent is null for position:fixed elements (and anything inside a
+    // transformed/contained ancestor) even when fully visible — e.g. Gemini's
+    // launcher composer. A sized box that isn't explicitly hidden still counts.
+    const style = getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none';
   }
 
   // The composer editor. The site configs list selectors most-specific first
@@ -354,12 +361,16 @@
       // a freshly rendered user turn is the proof the prompt actually went out.
       tagNewUserTurn(turnId, beforeCount, (sent) => {
         dbg('user turn rendered:', sent);
-        if (isWorkspacePane) {
-          chrome.runtime.sendMessage(
-            { action: 'workspace_inject_result', model: config.source, ok: sent },
-            () => void chrome.runtime.lastError
-          );
-        }
+        // Report the outcome: to the workspace bar when we're a pane, or to the
+        // Tiled-Windows shared prompt bar when we're a managed top-frame window.
+        chrome.runtime.sendMessage(
+          {
+            action: isWorkspacePane ? 'workspace_inject_result' : 'tiled_inject_result',
+            model: config.source,
+            ok: sent
+          },
+          () => void chrome.runtime.lastError
+        );
       });
       scheduleUrlReports();
       setTimeout(() => { isProgrammaticInput = false; }, 500);
@@ -430,12 +441,14 @@
         if (attempts++ > 15) {
           console.warn('[Multi-Prompt] inject failed: no visible editor for selector', config.inputSelector);
           isProgrammaticInput = false;
-          if (isWorkspacePane) {
-            chrome.runtime.sendMessage(
-              { action: 'workspace_inject_result', model: config.source, ok: false },
-              () => void chrome.runtime.lastError
-            );
-          }
+          chrome.runtime.sendMessage(
+            {
+              action: isWorkspacePane ? 'workspace_inject_result' : 'tiled_inject_result',
+              model: config.source,
+              ok: false
+            },
+            () => void chrome.runtime.lastError
+          );
           return;
         }
         setTimeout(tryInject, 1000);
@@ -547,11 +560,19 @@
     chrome.runtime.sendMessage({ action: 'query_managed' }, (response) => {
       const err = chrome.runtime.lastError;
       if (!err && response && response.managed) {
-        injectManagedButton();
+        // When the session has a shared prompt bar, that bar hosts the panel
+        // button — so suppress (and clear) the in-page floating one.
+        if (response.hasBar) removeManagedButton();
+        else injectManagedButton();
         return;
       }
       if (attempt < 5) setTimeout(() => requestManagedButton(attempt + 1), 1000);
     });
+  }
+
+  function removeManagedButton() {
+    const btn = document.getElementById('mp-fab');
+    if (btn) btn.remove();
   }
 
   function injectManagedButton() {
@@ -718,6 +739,11 @@
         // the floating button without waiting on the query_managed poll (which
         // can race window creation for fast-loading launcher pages).
         injectManagedButton();
+        sendResponse({ success: true });
+      } else if (request.action === 'hide_managed_button') {
+        // The session has a shared prompt bar that hosts the panel button, so
+        // remove the in-page floating one (covers a bar added mid-session).
+        removeManagedButton();
         sendResponse({ success: true });
       } else if (request.action === 'extract_chat_history') {
         const history = typeof config.extractHistory === 'function' ? config.extractHistory() : [];

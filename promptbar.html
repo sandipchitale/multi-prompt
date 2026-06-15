@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Multi-Prompt — Shared Prompt</title>
+  <style>
+    :root {
+      --bg: #f7f9fa;
+      --panel: #ffffff;
+      --border: #d8dee9;
+      --text: #1a1d29;
+      --muted: #5d6478;
+    }
+    [data-theme="dark"] {
+      --bg: #0f111a;
+      --panel: #161925;
+      --border: #2a2f45;
+      --text: #e7e9f0;
+      --muted: #8a90a8;
+    }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    /* Per-model delivery strip — the bar is where the user acts, so feedback
+       lives here (tiled chatbots are separate OS windows with no shared
+       titlebar). Mirrors the Tiled-in-a-Tab pane titlebar indicators. */
+    .chips {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      flex: 0 0 auto;
+      padding: 6px 12px 0;
+      min-height: 22px;
+    }
+    .chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--muted);
+    }
+    .pane-dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+    .pane-dot.connected {
+      background: #22c55e;
+      box-shadow: 0 0 5px rgba(34, 197, 94, 0.7);
+    }
+    .pane-dot.disconnected {
+      background: #ef4444;
+      box-shadow: 0 0 5px rgba(239, 68, 68, 0.7);
+    }
+    .pane-result { font-size: 11px; font-weight: 700; min-width: 8px; }
+    .pane-result.pending { color: var(--muted); }
+    .pane-result.ok { color: #22c55e; }
+    .pane-result.fail { color: #ef4444; }
+    @media (prefers-reduced-motion: no-preference) {
+      .pane-result { transition: opacity 0.6s ease; }
+    }
+    .pane-result.fade { opacity: 0; }
+    .composer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      padding: 6px 12px;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+    }
+    /* The shared prompt is the star: a full-width pill with a slowly drifting
+       multicolor border and a soft glow — identical to the Tiled-in-a-Tab bar. */
+    .prompt-shell {
+      flex: 1;
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      min-width: 0;
+      box-sizing: border-box;
+      padding: 5px 5px 5px 20px;
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background:
+        linear-gradient(var(--panel), var(--panel)) padding-box,
+        linear-gradient(120deg, #7c3aed, #d946ef, #06b6d4, #22c55e, #7c3aed) border-box;
+      background-size: 100% 100%, 300% 300%;
+      box-shadow: 0 0 12px rgba(124, 58, 237, 0.22);
+      transition: box-shadow 0.2s ease;
+    }
+    .prompt-shell.multiline { border-radius: 24px; }
+    @media (prefers-reduced-motion: no-preference) {
+      .prompt-shell { animation: prompt-glow-pan 8s linear infinite; }
+    }
+    .prompt-shell:focus-within {
+      box-shadow: 0 0 20px rgba(124, 58, 237, 0.38);
+    }
+    @keyframes prompt-glow-pan {
+      0%   { background-position: 0 0, 0% 50%; }
+      50%  { background-position: 0 0, 100% 50%; }
+      100% { background-position: 0 0, 0% 50%; }
+    }
+    #prompt {
+      flex: 1;
+      height: 40px;
+      overflow-y: auto;
+      resize: none;
+      box-sizing: border-box;
+      padding: 10px 0;
+      border: none;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+    }
+    #prompt:focus { outline: none; }
+    #send {
+      height: 38px;
+      min-width: 108px;
+      padding: 0 22px;
+      border: none;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #7c3aed 0%, #d946ef 100%);
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #send:disabled { opacity: 0.5; cursor: default; }
+    /* Panel button (the [M] that lived as a floating button in each tiled
+       window): a 54px gradient pill matching the brand mark, leftmost in the
+       row so it reads as the workspace's home control. */
+    #pb-menu {
+      flex: 0 0 auto;
+      height: 54px;
+      width: 54px;
+      padding: 0;
+      border: none;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #7c3aed 0%, #d946ef 100%);
+      color: #fff;
+      font: 700 22px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      cursor: pointer;
+      box-shadow: 0 0 8px rgba(124, 58, 237, 0.35);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    #pb-menu:hover { transform: scale(1.05); box-shadow: 0 0 14px rgba(124, 58, 237, 0.5); }
+    #status { font-size: 11px; color: #ef4444; max-width: 240px; }
+    #status:empty { display: none; }
+    /* Pill controls matching the prompt shell's 54px outer height. */
+    #pb-export-format {
+      height: 54px;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: inherit;
+      font: inherit;
+      padding: 0 42px 0 24px;
+      appearance: none;
+      -webkit-appearance: none;
+      background-color: var(--bg);
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%235d6478' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 20px center;
+    }
+    [data-theme="dark"] #pb-export-format {
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%238a90a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    }
+    #pb-export {
+      height: 54px;
+      box-sizing: border-box;
+      padding: 0 20px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #pb-export:disabled { opacity: 0.5; cursor: default; }
+    #pb-private {
+      height: 54px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 20px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #pb-private svg { display: block; }
+    #pb-private:disabled { cursor: default; }
+    #pb-private.active {
+      border-color: #7c3aed;
+      color: #7c3aed;
+      box-shadow: 0 0 8px rgba(124, 58, 237, 0.35);
+    }
+    .theme-toggle {
+      height: 54px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 4px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+    }
+    .theme-toggle label { cursor: pointer; }
+    .theme-toggle input {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      margin: 0;
+      pointer-events: none;
+    }
+    .theme-toggle span {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 44px;
+      box-sizing: border-box;
+      padding: 0 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      transition: all 0.2s ease;
+    }
+    .theme-toggle input:checked + span {
+      background: #7c3aed;
+      color: #fff;
+      box-shadow: 0 0 8px rgba(124, 58, 237, 0.5);
+    }
+    #pb-menu:focus-visible,
+    #send:focus-visible,
+    #pb-export:focus-visible,
+    #pb-private:focus-visible,
+    #pb-export-format:focus-visible {
+      outline: 2px solid #7c3aed;
+      outline-offset: 2px;
+    }
+    .theme-toggle input:focus-visible + span {
+      outline: 2px solid #7c3aed;
+      outline-offset: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="chips" id="chips"></div>
+  <div class="composer">
+    <button id="pb-menu" type="button"
+      title="Open the Multi-Prompt panel — model selection, tile order, saved sessions, export">M</button>
+    <div class="prompt-shell">
+      <textarea id="prompt" rows="1"
+        placeholder="Type a prompt — Enter sends it to every tiled window (Shift+Enter for a newline)"></textarea>
+      <button id="send" type="button">Send</button>
+    </div>
+    <span id="status"></span>
+    <button id="pb-private" type="button"
+      title="Switch all tiled windows to private/temporary chat — this chat will NOT be saved to Saved Sessions">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 10h.01"></path>
+        <path d="M15 10h.01"></path>
+        <path d="M12 2a8 8 0 0 0-8 8v12l3-3 2.5 2.5L12 19l2.5 2.5L17 19l3 3V10a8 8 0 0 0-8-8z"></path>
+      </svg>
+      <span id="pb-private-label">Private</span>
+    </button>
+    <select id="pb-export-format" title="Export format">
+      <option value="markdown">Markdown (.md)</option>
+      <option value="pdf">PDF / Print (.pdf)</option>
+    </select>
+    <button id="pb-export" type="button" title="Export the tiled windows' chats">Export</button>
+    <div class="theme-toggle" title="Select Theme">
+      <label>
+        <input type="radio" name="theme" value="auto" checked />
+        <span>Auto</span>
+      </label>
+      <label>
+        <input type="radio" name="theme" value="light" />
+        <span>☀️</span>
+      </label>
+      <label>
+        <input type="radio" name="theme" value="dark" />
+        <span>🌙</span>
+      </label>
+    </div>
+  </div>
+  <script src="align.js"></script>
+  <script src="promptbar.js"></script>
+</body>
+</html>

@@ -210,9 +210,23 @@ async function clearActiveSession() {
 chrome.windows.onRemoved.addListener(async (windowId) => {
   await removeManagedWindowId(windowId);
   const session = await getActiveSession();
-  if (session && session.windows) {
+  if (!session) return;
+  // The shared prompt bar closed on its own: just forget it, keep the session.
+  if (session.promptBarWindowId === windowId) {
+    session.promptBarWindowId = null;
+    session.promptBarTabId = null;
+    await setActiveSession(session);
+    return;
+  }
+  if (session.windows) {
     const stillOpen = Object.values(session.windows).some(id => id !== windowId);
-    if (!stillOpen) await clearActiveSession();
+    if (!stillOpen) {
+      // Last chatbot window gone — close the orphaned prompt bar with it.
+      if (session.promptBarWindowId != null) {
+        try { await chrome.windows.remove(session.promptBarWindowId); } catch (e) { /* gone */ }
+      }
+      await clearActiveSession();
+    }
   }
 });
 
@@ -227,7 +241,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'new_chat') {
-    handleNewChat(request.models, request.screenInfo);
+    handleNewChat(request.models, request.screenInfo, !!request.sharedPromptBar);
     sendResponse({ status: 'new_chat_sent' });
   } else if (request.action === 'rearrange_tiles') {
     rearrangeTiles(request.models);
@@ -244,7 +258,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   } else if (request.action === 'close_tiles') {
-    closeTiledWindows().then(() => {
+    // Tear down the tiles + bar, and (Safari) the standalone popup.html panel
+    // window the [M] button opens — the user asked for everything to go.
+    Promise.all([closeTiledWindows(), closeStandalonePopupWindows()]).then(() => {
       sendResponse({ status: 'closed' });
     }).catch(err => {
       sendResponse({ status: 'error', error: err.message || String(err) });
@@ -258,7 +274,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   } else if (request.action === 'open_session') {
-    openSession(request.folderId, request.screenInfo).then(() => {
+    openSession(request.folderId, request.screenInfo, !!request.sharedPromptBar).then(() => {
       sendResponse({ status: 'success' });
     }).catch(err => {
       sendResponse({ status: 'error', error: err.message || String(err) });
@@ -280,8 +296,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.action === 'query_managed') {
     // A content script asking whether its window is part of a live Multi-Prompt
-    // session, so it knows whether to show its in-page floating button.
-    isWindowManaged(sender).then(managed => sendResponse({ managed: managed }));
+    // session, so it knows whether to show its in-page floating button. When the
+    // session has a shared prompt bar, that bar hosts the panel button instead,
+    // so the in-page one is suppressed (hasBar).
+    Promise.all([isWindowManaged(sender), getActiveSession()]).then(([managed, session]) => {
+      sendResponse({ managed: managed, hasBar: !!(session && session.promptBarWindowId) });
+    });
     return true;
   } else if (request.action === 'open_popup') {
     // The in-page floating button forwards its click here: content scripts can't
@@ -358,6 +378,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ status: 'error', error: err.message || String(err) });
     });
     return true;
+  } else if (request.action === 'promptbar_init') {
+    // The shared prompt bar (Tiled Windows) loaded and asking for the session's
+    // model order, so it can render one delivery chip per tiled window.
+    getActiveSession().then(session => {
+      sendResponse({ status: 'success', order: (session && session.order) || [] });
+    }).catch(() => sendResponse({ status: 'success', order: [] }));
+    return true;
+  } else if (request.action === 'promptbar_status') {
+    // The bar polling which of its models still have a live tiled window (for
+    // the connection dots) and whether the session has gone private.
+    promptbarStatus().then(r => sendResponse(r))
+      .catch(() => sendResponse({ status: 'success', order: [], connected: [], private: false }));
+    return true;
+  } else if (request.action === 'promptbar_private') {
+    // The bar's Private button: switch every tiled window to the site's
+    // private/temporary mode and stop persisting the session.
+    promptbarPrivate().then(r => sendResponse(r))
+      .catch(err => sendResponse({ status: 'error', error: err.message || String(err) }));
+    return true;
+  } else if (request.action === 'tiled_inject_result') {
+    // A managed tiled window reporting whether its injected prompt rendered.
+    // Forward to the session's prompt bar for its per-window delivery badge.
+    forwardTiledResult(request.model, !!request.ok, sender).finally(() => sendResponse({ ok: true }));
+    return true;
   } else if (request.action === 'session_url') {
     // A chatbot content script reporting its current URL — the reliable way to
     // learn the conversation permalink after an SPA history navigation, which
@@ -428,6 +472,105 @@ function computeGeom(screenInfo, i, n) {
   // Give the last window any leftover pixels so the row spans the full width.
   const width = (i === n - 1) ? (availWidth - i * baseWidth) : baseWidth;
   return { left: left, top: availTop, width: width, height: availHeight };
+}
+
+// --- Shared prompt bar (Tiled Windows) -------------------------------------
+//
+// An opt-in, chrome-less app window docked across the bottom that holds the
+// shared prompt box, so Tiled Windows gets the same "type once, broadcast to
+// all" experience as Tiled in a Tab — and it works on Safari, where Tiled in a
+// Tab can't run. The chatbot windows are tiled into the area ABOVE it.
+//
+// Both Chrome and Safari lose usable height to the window's title bar, so the
+// bar needs to be tall enough that the chips row + the 54px prompt-pill row
+// aren't squeezed flush against the bottom edge. `.composer` centres its row,
+// so the slack becomes balanced top/bottom padding.
+const PROMPT_BAR_HEIGHT = 150;
+
+// Bottom margin differs only because the platforms position the window
+// differently: Chrome adds its title frame PAST the height we ask (so the real
+// window hangs lower — this margin pulls it back on-screen), while Safari keeps
+// the title bar INSIDE the height, so it just needs a small gap.
+const IS_SAFARI = (() => {
+  try { return chrome.runtime.getURL('').startsWith('safari-web-extension:'); }
+  catch (e) { return false; }
+})();
+const PROMPT_BAR_BOTTOM_MARGIN = IS_SAFARI ? 12 : 28;
+// A hairline gap between the bottom of the tiles and the top of the bar.
+const PROMPT_BAR_TOP_GAP = 4;
+// Total vertical space the bar reserves — the tiles are shortened by this.
+const PROMPT_BAR_RESERVE = PROMPT_BAR_HEIGHT + PROMPT_BAR_BOTTOM_MARGIN + PROMPT_BAR_TOP_GAP;
+
+// The screen rect the chatbot tiles get: full height, or shortened to leave the
+// bottom strip (and its gaps) free when a prompt bar is requested.
+function tileScreen(screenInfo, withBar) {
+  if (!withBar) return screenInfo;
+  return {
+    ...screenInfo,
+    availHeight: Math.max(240, screenInfo.availHeight - PROMPT_BAR_RESERVE)
+  };
+}
+
+// The bar spans the full width (the same total span the tile row covers) and
+// sits above the bottom of the work area by the bottom margin.
+function promptBarGeom(screenInfo) {
+  const { availLeft, availTop, availWidth, availHeight } = screenInfo;
+  return {
+    left: availLeft,
+    top: availTop + availHeight - PROMPT_BAR_HEIGHT - PROMPT_BAR_BOTTOM_MARGIN,
+    width: availWidth,
+    height: PROMPT_BAR_HEIGHT
+  };
+}
+
+async function createPromptBar(screenInfo) {
+  const geom = promptBarGeom(screenInfo);
+  const win = await chrome.windows.create({
+    url: chrome.runtime.getURL('promptbar.html'),
+    type: "popup", // app-style: no address bar / bookmarks / tab strip
+    left: geom.left, top: geom.top, width: geom.width, height: geom.height,
+    focused: true
+  });
+  // Safari ignores the bounds passed to create; re-apply once it exists.
+  try { await chrome.windows.update(win.id, { state: "normal", ...geom }); } catch (e) { /* best effort */ }
+  const tab = await firstTabOf(win);
+  return { windowId: win.id, tabId: tab ? tab.id : null };
+}
+
+// Re-apply the bar's geometry in the settle pass, mirroring tileWindows (later
+// windows.create calls and Safari's async placement can shove it around).
+async function positionPromptBar(windowId, screenInfo) {
+  if (windowId == null) return;
+  try {
+    await chrome.windows.update(windowId, { state: "normal", ...promptBarGeom(screenInfo) });
+  } catch (e) {
+    console.warn("Could not position prompt bar:", e);
+  }
+}
+
+// Reconcile an active session's prompt bar with the requested state: create one
+// (and add it to the managed set) when wanted and absent, or close it when no
+// longer wanted. Mutates `session` in place; the caller persists it.
+async function ensurePromptBar(session, screenInfo, withBar) {
+  let barId = session.promptBarWindowId || null;
+  if (barId != null) {
+    try { await chrome.windows.get(barId); } catch (e) { barId = null; } // stale
+  }
+  if (withBar && barId == null) {
+    const bar = await createPromptBar(screenInfo);
+    session.promptBarWindowId = bar.windowId;
+    session.promptBarTabId = bar.tabId;
+    const ids = await getManagedWindowIds();
+    ids.add(bar.windowId);
+    await setManagedWindowIds(ids);
+  } else if (!withBar && barId != null) {
+    try { await chrome.windows.remove(barId); } catch (e) { /* already gone */ }
+    await removeManagedWindowId(barId);
+    session.promptBarWindowId = null;
+    session.promptBarTabId = null;
+  } else {
+    session.promptBarWindowId = barId; // keep whatever's live (or null)
+  }
 }
 
 async function createWindow(url, geom) {
@@ -925,7 +1068,7 @@ async function getPrivateChatPref() {
   return !!privateChatPref;
 }
 
-async function handleNewChat(models, screenInfo) {
+async function handleNewChat(models, screenInfo, withBar) {
   try {
     const n = models.length;
     if (n === 0) return;
@@ -933,21 +1076,29 @@ async function handleNewChat(models, screenInfo) {
     const privateMode = await getPrivateChatPref();
     const session = await getActiveSession();
     if (session && await sessionWindowsMatch(session, models)) {
-      // Reuse the existing tiled windows: re-tile, start a fresh chat in each.
+      // Reuse the existing tiled windows: re-tile (leaving room for the bar when
+      // wanted), start a fresh chat in each.
+      const tScreen = tileScreen(screenInfo, withBar);
       for (let i = 0; i < n; i++) {
         await chrome.windows.update(session.windows[models[i]], {
-          state: "normal", focused: true, ...computeGeom(screenInfo, i, n)
+          state: "normal", focused: true, ...computeGeom(tScreen, i, n)
         });
       }
       await sendActionToTabs(models, 'new_chat');
-      await rotateSession(session, models, privateMode);
+      await rotateSession(session, models, privateMode); // carries the bar over
+      const next = await getActiveSession();
+      await ensurePromptBar(next, screenInfo, withBar);
+      await setActiveSession(next);
+      await positionPromptBar(next.promptBarWindowId, screenInfo);
+      // Show the in-page panel button only when there's no bar to host it.
+      notifyManagedButtons(next);
       // After the in-page New Chat lands on the fresh launcher, click each
       // site's private toggle (the content script polls for the button, so the
       // SPA navigation racing this message is fine).
       if (privateMode) await sendActionToTabs(models, 'enter_private_chat');
     } else {
       // Nothing usable open: tile fresh windows and start a new session.
-      await startFreshSession(models, screenInfo, privateMode);
+      await startFreshSession(models, screenInfo, privateMode, withBar);
     }
   } catch (err) {
     console.error("Failed to start new chat:", err);
@@ -966,7 +1117,10 @@ async function rotateSession(session, models, privateMode) {
     tabs: session.tabs,
     bookmarks: {},
     ledger: [],
-    private: !!privateMode
+    private: !!privateMode,
+    // Carry the live prompt bar across the rotation (ensurePromptBar reconciles).
+    promptBarWindowId: session.promptBarWindowId || null,
+    promptBarTabId: session.promptBarTabId || null
   };
   await setActiveSession(next);
 }
@@ -987,10 +1141,11 @@ async function sessionWindowsMatch(session, models) {
 // Open fresh chats for each model, tiled. The active session is set up here but
 // its durable record is created lazily on the first prompt (see
 // ensureSessionPersisted), so tiling without ever typing leaves nothing saved.
-async function startFreshSession(models, screenInfo, privateMode) {
+async function startFreshSession(models, screenInfo, privateMode, withBar) {
   await closeTiledWindows();
 
-  const { windows, tabs, managed } = await openTiledWindows(models, (m) => AI_URLS[m], screenInfo);
+  const tScreen = tileScreen(screenInfo, withBar);
+  const { windows, tabs, managed } = await openTiledWindows(models, (m) => AI_URLS[m], tScreen);
   const session = {
     folderId: null,
     metaBookmarkId: null,
@@ -999,8 +1154,19 @@ async function startFreshSession(models, screenInfo, privateMode) {
     tabs: tabs,
     bookmarks: {},
     ledger: [],
-    private: !!privateMode
+    private: !!privateMode,
+    promptBarWindowId: null,
+    promptBarTabId: null
   };
+
+  // Open the bar (added to the managed set so it broadcasts and tears down with
+  // the session) before storing the managed ids.
+  if (withBar) {
+    const bar = await createPromptBar(screenInfo);
+    session.promptBarWindowId = bar.windowId;
+    session.promptBarTabId = bar.tabId;
+    managed.add(bar.windowId);
+  }
 
   await setManagedWindowIds(managed);
   await setActiveSession(session);
@@ -1018,15 +1184,19 @@ async function startFreshSession(models, screenInfo, privateMode) {
     }
   }
 
-  await tileWindows(models.map((m) => windows[m]), screenInfo);
+  await tileWindows(models.map((m) => windows[m]), tScreen);
+  await positionPromptBar(session.promptBarWindowId, screenInfo);
 }
 
-// Tell each of a session's chatbot tabs to show its floating button, retrying
-// until the content script is ready.
+// Reconcile each chatbot tab's in-page floating panel button, retrying until
+// the content script is ready. When the session has a shared prompt bar, the
+// bar hosts the panel button, so the in-page one is hidden instead of shown.
 function notifyManagedButtons(session) {
+  const action = (session && session.promptBarWindowId)
+    ? 'hide_managed_button' : 'show_managed_button';
   for (const model of Object.keys(session.tabs || {})) {
     const tabId = session.tabs[model];
-    if (tabId != null) sendWhenReady(tabId, { action: 'show_managed_button' });
+    if (tabId != null) sendWhenReady(tabId, { action: action });
   }
 }
 
@@ -1041,6 +1211,22 @@ async function closeTiledWindows() {
   }
   await setManagedWindowIds(new Set());
   await clearActiveSession();
+}
+
+// Close any standalone popup.html window opened as the panel fallback (Safari,
+// and any browser where action.openPopup is unavailable). Matches the same URL
+// openPopupWindow uses to find/reuse it. A no-op when the panel is the toolbar
+// popup (Chrome), since that isn't a window in windows.getAll.
+async function closeStandalonePopupWindows() {
+  const url = chrome.runtime.getURL('popup.html');
+  try {
+    const wins = await chrome.windows.getAll({ populate: true });
+    for (const w of wins) {
+      if (w.tabs && w.tabs.some(t => t.url && t.url.split('#')[0] === url)) {
+        try { await chrome.windows.remove(w.id); } catch (e) { /* already gone */ }
+      }
+    }
+  } catch (e) { /* best effort */ }
 }
 
 async function sendActionToTabs(models, actionType) {
@@ -1143,6 +1329,61 @@ async function handleBroadcast(prompt, source, sender, turnId) {
   }
 }
 
+// --- Shared prompt bar (Tiled Windows) messaging ---------------------------
+
+// Which of the active session's models still have a live tiled window (so the
+// bar can light its connection dots), plus whether the session has gone private.
+async function promptbarStatus() {
+  const session = await getActiveSession();
+  if (!session) return { status: 'success', order: [], connected: [], private: false };
+  const managedIds = await getManagedWindowIds();
+  const allTabs = await chrome.tabs.query({});
+  const order = session.order || [];
+  const connected = order.filter(model =>
+    allTabs.some(t => tabMatchesModel(t, model) && managedIds.has(t.windowId)));
+  return { status: 'success', order: order, connected: connected, private: !!session.private };
+}
+
+// The bar's Private button: switch every tiled window to its site's private/
+// temporary mode and mark the session private so it's no longer persisted
+// (doRecordLedgerTurn skips private sessions). Mirrors privatizeWorkspaceTab.
+async function promptbarPrivate() {
+  const session = await getActiveSession();
+  if (!session) throw new Error('No active tiled session.');
+  const models = session.order || [];
+  if (!models.length) throw new Error('No chatbots in this session.');
+
+  session.private = true;
+  await setActiveSession(session);
+
+  const managedIds = await getManagedWindowIds();
+  const allTabs = await chrome.tabs.query({});
+  const results = await Promise.all(models.map((model) => new Promise((resolve) => {
+    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId));
+    if (!tab) { resolve({ model: model, ok: false }); return; }
+    chrome.tabs.sendMessage(tab.id, { action: 'enter_private_chat' }, (response) => {
+      void chrome.runtime.lastError;
+      resolve({ model: model, ok: !!(response && response.success) });
+    });
+  })));
+  return { status: 'success', results: results };
+}
+
+// A managed tiled window reported whether its injected prompt rendered. Forward
+// it to the session's prompt bar for that model's delivery badge.
+async function forwardTiledResult(model, ok, sender) {
+  if (!sender || !sender.tab) return;
+  const session = await getActiveSession();
+  if (!session || session.promptBarTabId == null) return;
+  const managedIds = await getManagedWindowIds();
+  if (!managedIds.has(sender.tab.windowId)) return;
+  chrome.tabs.sendMessage(
+    session.promptBarTabId,
+    { action: 'promptbar_pane_result', model: model, ok: ok },
+    () => void chrome.runtime.lastError
+  );
+}
+
 // --- Export ----------------------------------------------------------------
 
 // Pick the workspace whose chats an export should capture: the workspace tab
@@ -1219,15 +1460,16 @@ async function filterToSelected(order) {
   return kept.length ? kept : order;
 }
 
-async function openSession(folderId, screenInfo) {
+async function openSession(folderId, screenInfo, withBar) {
   const loaded = await sessionRepo.loadSession(folderId);
   const order = await filterToSelected(loaded.order);
   if (!order || order.length === 0) throw new Error("No chatbots saved in this session.");
 
   await closeTiledWindows();
 
+  const tScreen = tileScreen(screenInfo, withBar);
   const { windows, tabs, managed } = await openTiledWindows(
-    order, (m) => loaded.urls[m] || AI_URLS[m], screenInfo);
+    order, (m) => loaded.urls[m] || AI_URLS[m], tScreen);
   const session = {
     folderId: folderId,
     metaBookmarkId: loaded.metaBookmarkId || null,
@@ -1235,8 +1477,17 @@ async function openSession(folderId, screenInfo) {
     windows: windows,
     tabs: tabs,
     bookmarks: loaded.bookmarks || {},
-    ledger: Array.isArray(loaded.turns) ? loaded.turns : []
+    ledger: Array.isArray(loaded.turns) ? loaded.turns : [],
+    promptBarWindowId: null,
+    promptBarTabId: null
   };
+
+  if (withBar) {
+    const bar = await createPromptBar(screenInfo);
+    session.promptBarWindowId = bar.windowId;
+    session.promptBarTabId = bar.tabId;
+    managed.add(bar.windowId);
+  }
 
   // Re-stamp the reloaded turns with their original ids so alignment survives.
   if (session.ledger.length) {
@@ -1252,7 +1503,8 @@ async function openSession(folderId, screenInfo) {
 
   notifyManagedButtons(session);
 
-  await tileWindows(order.map((m) => windows[m]), screenInfo);
+  await tileWindows(order.map((m) => windows[m]), tScreen);
+  await positionPromptBar(session.promptBarWindowId, screenInfo);
 }
 
 async function deleteSession(folderId) {

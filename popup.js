@@ -54,6 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionRenameSave = document.getElementById('session-rename-save');
   const sessionRenameCancel = document.getElementById('session-rename-cancel');
   const privateChatCheckbox = document.getElementById('private-chat');
+  const sharedPromptBarCheckbox = document.getElementById('shared-prompt-bar');
   let savedSessions = [];
 
   // Private/temporary chats: the background reads this pref when launching new
@@ -61,6 +62,14 @@ document.addEventListener('DOMContentLoaded', () => {
   privateChatCheckbox.addEventListener('change', () => {
     chrome.storage.local.set({ privateChatPref: privateChatCheckbox.checked });
   });
+
+  // Shared prompt bar (Tiled Windows only): a docked prompt window that
+  // broadcasts to every tiled chatbot window. Sent with new_chat / open_session.
+  if (sharedPromptBarCheckbox) {
+    sharedPromptBarCheckbox.addEventListener('change', () => {
+      chrome.storage.local.set({ sharedPromptBar: sharedPromptBarCheckbox.checked });
+    });
+  }
 
   // Tiled in a Tab cannot work on Safari (its declarativeNetRequest cannot
   // remove the X-Frame-Options/CSP response headers the iframes need stripped),
@@ -96,8 +105,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Load saved selections, order, and export format preference
-  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref', 'privateChatPref'], (result) => {
+  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref', 'privateChatPref', 'sharedPromptBar'], (result) => {
     privateChatCheckbox.checked = !!result.privateChatPref;
+    if (sharedPromptBarCheckbox) sharedPromptBarCheckbox.checked = !!result.sharedPromptBar;
     const sel = Array.isArray(result.selectedModels) ? result.selectedModels : ALL_MODELS.slice();
     selected = new Set(sel);
 
@@ -405,7 +415,8 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.runtime.sendMessage({
         action: 'open_session',
         folderId: folderId,
-        screenInfo: currentScreenInfo()
+        screenInfo: currentScreenInfo(),
+        sharedPromptBar: !!(sharedPromptBarCheckbox && sharedPromptBarCheckbox.checked)
       }, (response) => {
         if (chrome.runtime.lastError || !response || response.status !== 'success') {
           alert('Could not open this session.');
@@ -566,7 +577,8 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.runtime.sendMessage({
         action: 'new_chat',
         models: selectedModels,
-        screenInfo: currentScreenInfo()
+        screenInfo: currentScreenInfo(),
+        sharedPromptBar: !!(sharedPromptBarCheckbox && sharedPromptBarCheckbox.checked)
       }, () => {
         const err = chrome.runtime.lastError;
         setTimeout(() => {
