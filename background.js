@@ -32,6 +32,14 @@ function tabMatchesModel(tab, model) {
   }
 }
 
+// The tab hosting `model` inside one of the session's managed windows, or null.
+// A stray, unmanaged chatbot tab that happens to come first in the tab list
+// must never shadow the tiled/managed one, so the managed-window check is
+// always applied.
+function findManagedModelTab(allTabs, managedIds, model) {
+  return allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId)) || null;
+}
+
 // Identify which model (if any) a URL belongs to by hostname.
 function modelForUrl(url) {
   for (const model of Object.keys(AI_URLS)) {
@@ -491,11 +499,7 @@ const PROMPT_BAR_HEIGHT = 150;
 // differently: Chrome adds its title frame PAST the height we ask (so the real
 // window hangs lower — this margin pulls it back on-screen), while Safari keeps
 // the title bar INSIDE the height, so it just needs a small gap.
-const IS_SAFARI = (() => {
-  try { return chrome.runtime.getURL('').startsWith('safari-web-extension:'); }
-  catch (e) { return false; }
-})();
-const PROMPT_BAR_BOTTOM_MARGIN = IS_SAFARI ? 12 : 28;
+const PROMPT_BAR_BOTTOM_MARGIN = IS_SAFARI_EXTENSION ? 12 : 28;
 // A hairline gap between the bottom of the tiles and the top of the bar.
 const PROMPT_BAR_TOP_GAP = 4;
 // Total vertical space the bar reserves — the tiles are shortened by this.
@@ -546,6 +550,16 @@ async function positionPromptBar(windowId, screenInfo) {
   } catch (e) {
     console.warn("Could not position prompt bar:", e);
   }
+}
+
+// Open the shared prompt bar for a freshly built session and record it. The
+// managed-id set isn't stored yet here, so the bar is added to it in-place;
+// ensurePromptBar covers the already-live-session case instead.
+async function attachPromptBar(session, managed, screenInfo) {
+  const bar = await createPromptBar(screenInfo);
+  session.promptBarWindowId = bar.windowId;
+  session.promptBarTabId = bar.tabId;
+  managed.add(bar.windowId);
 }
 
 // Reconcile an active session's prompt bar with the requested state: create one
@@ -1161,12 +1175,7 @@ async function startFreshSession(models, screenInfo, privateMode, withBar) {
 
   // Open the bar (added to the managed set so it broadcasts and tears down with
   // the session) before storing the managed ids.
-  if (withBar) {
-    const bar = await createPromptBar(screenInfo);
-    session.promptBarWindowId = bar.windowId;
-    session.promptBarTabId = bar.tabId;
-    managed.add(bar.windowId);
-  }
+  if (withBar) await attachPromptBar(session, managed, screenInfo);
 
   await setManagedWindowIds(managed);
   await setActiveSession(session);
@@ -1234,7 +1243,7 @@ async function sendActionToTabs(models, actionType) {
     const allTabs = await chrome.tabs.query({});
     const managedIds = await getManagedWindowIds();
     for (const model of models) {
-      const tab = allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId)) ||
+      const tab = findManagedModelTab(allTabs, managedIds, model) ||
                   allTabs.find(t => tabMatchesModel(t, model));
       if (tab) {
         chrome.tabs.sendMessage(tab.id, { action: actionType }, () => void chrome.runtime.lastError);
@@ -1261,7 +1270,7 @@ async function rearrangeTiles(orderedModels) {
     // Open managed windows for the requested models, in the requested order.
     const entries = [];
     for (const model of orderedModels) {
-      const tab = allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId));
+      const tab = findManagedModelTab(allTabs, managedIds, model);
       if (tab) {
         const win = await chrome.windows.get(tab.windowId);
         entries.push({ model, win });
@@ -1313,9 +1322,7 @@ async function handleBroadcast(prompt, source, sender, turnId) {
     const allTabs = await chrome.tabs.query({});
 
     for (const model of targetModels) {
-      // Only consider tabs in managed windows: a stray, unmanaged chatbot tab
-      // that happens to come first in the tab list must not shadow the tiled one.
-      const tab = allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId));
+      const tab = findManagedModelTab(allTabs, managedIds, model);
       if (tab) {
         chrome.tabs.sendMessage(tab.id, {
           action: 'inject_prompt',
@@ -1339,8 +1346,7 @@ async function promptbarStatus() {
   const managedIds = await getManagedWindowIds();
   const allTabs = await chrome.tabs.query({});
   const order = session.order || [];
-  const connected = order.filter(model =>
-    allTabs.some(t => tabMatchesModel(t, model) && managedIds.has(t.windowId)));
+  const connected = order.filter(model => !!findManagedModelTab(allTabs, managedIds, model));
   return { status: 'success', order: order, connected: connected, private: !!session.private };
 }
 
@@ -1359,7 +1365,7 @@ async function promptbarPrivate() {
   const managedIds = await getManagedWindowIds();
   const allTabs = await chrome.tabs.query({});
   const results = await Promise.all(models.map((model) => new Promise((resolve) => {
-    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedIds.has(t.windowId));
+    const tab = findManagedModelTab(allTabs, managedIds, model);
     if (!tab) { resolve({ model: model, ok: false }); return; }
     chrome.tabs.sendMessage(tab.id, { action: 'enter_private_chat' }, (response) => {
       void chrome.runtime.lastError;
@@ -1436,7 +1442,7 @@ async function handleExport(models) {
     // restarted with the in-memory storage.session shim, …) and previously
     // that model was silently exported empty. frameId 0 pins extraction to the
     // top-level page so a same-host subframe can never answer first with [].
-    const tab = allTabs.find(t => tabMatchesModel(t, model) && managedWindowIds.has(t.windowId)) ||
+    const tab = findManagedModelTab(allTabs, managedWindowIds, model) ||
                 (IS_SAFARI_EXTENSION ? allTabs.find(t => tabMatchesModel(t, model)) : null);
     results[model] = tab ? await extractHistory(tab.id, IS_SAFARI_EXTENSION ? 0 : undefined) : [];
   }
@@ -1482,12 +1488,7 @@ async function openSession(folderId, screenInfo, withBar) {
     promptBarTabId: null
   };
 
-  if (withBar) {
-    const bar = await createPromptBar(screenInfo);
-    session.promptBarWindowId = bar.windowId;
-    session.promptBarTabId = bar.tabId;
-    managed.add(bar.windowId);
-  }
+  if (withBar) await attachPromptBar(session, managed, screenInfo);
 
   // Re-stamp the reloaded turns with their original ids so alignment survives.
   if (session.ledger.length) {

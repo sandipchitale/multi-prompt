@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const sendBtn = document.getElementById('send');
   const statusEl = document.getElementById('status');
 
-  const MODEL_TITLES = { gemini: 'Gemini', claude: 'Claude', chatgpt: 'ChatGPT' };
+  const MODEL_TITLES = MPBar.MODEL_TITLES;
 
   // Inline SVG icons for the tile titlebars — text glyphs (–, ⛶, …) render at
   // inconsistent optical sizes per platform; these stay fixed and inherit the
@@ -38,110 +38,19 @@ document.addEventListener('DOMContentLoaded', () => {
   // of clicks doesn't cascade into a surprise maximize.
   const DBLCLICK_IGNORE_MS = 600;
 
-  // --- Theme: follow the popup's setting (auto / light / dark) --------------
-  let themePref = 'auto';
-
-  // Applies the page theme AND syncs the toggle's radios, so every caller
-  // (init, toggle change, popup change, OS change) stays consistent.
-  function applyTheme() {
-    const dark = themePref === 'dark' ||
-      (themePref === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-    const radio = document.querySelector('input[name="theme"][value="' + themePref + '"]');
-    if (radio) radio.checked = true;
-  }
-
-  chrome.storage.local.get(['themePref'], (result) => {
-    themePref = result.themePref || 'auto';
-    applyTheme();
-  });
-
-  document.querySelectorAll('input[name="theme"]').forEach((radio) => {
-    radio.addEventListener('change', (e) => {
-      themePref = e.target.value;
-      applyTheme();
-      chrome.storage.local.set({ themePref: themePref });
-    });
-  });
-
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
-
-  // Also fires for changes made from the popup (or another workspace tab),
-  // keeping this tab's toggle in sync.
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes.themePref) {
-      themePref = changes.themePref.newValue || 'auto';
-      applyTheme();
-    }
-  });
+  // Theme (auto / light / dark) — shared with the prompt bar; follows the popup
+  // and stays in sync across tabs/windows.
+  MPBar.setupTheme();
 
   // --- Per-pane broadcast results -------------------------------------------
   // 'pending' while a pane is still injecting; true/false once it reports
-  // whether the prompt's user turn actually rendered. Shown as a small badge
-  // in each pane's titlebar, next to the connection dot.
-  let paneResults = {};
-  const paneBadges = {};
-  // Per-model timers fading out a success ✓. Failures (✗) persist: success is
-  // the expected outcome and only needs a moment of confirmation, while a
-  // failure must stay visible until the user acts on it.
-  const fadeTimers = {};
-
-  const FADE_AFTER_MS = 3500; // ✓ dwell time before it starts fading
-  const FADE_DURATION_MS = 600; // matches the .pane-result opacity transition
-
-  function clearFadeTimers() {
-    Object.keys(fadeTimers).forEach((model) => {
-      clearTimeout(fadeTimers[model]);
-      delete fadeTimers[model];
-    });
-  }
-
-  function renderResults() {
-    Object.keys(paneBadges).forEach((model) => {
-      const badge = paneBadges[model];
-      // (Re)painting always restores full opacity; the fade class is only
-      // ever added by the timer below.
-      badge.classList.remove('fade');
-      if (!(model in paneResults)) {
-        badge.textContent = '';
-        badge.className = 'pane-result';
-        badge.title = '';
-        return;
-      }
-      const state = paneResults[model];
-      badge.textContent = state === 'pending' ? '…' : (state ? '✓' : '✗');
-      badge.className = 'pane-result ' +
-        (state === 'pending' ? 'pending' : (state ? 'ok' : 'fail'));
-      badge.title = state === 'pending'
-        ? 'Sending the last prompt…'
-        : (state ? 'Last prompt delivered' : 'Last prompt did NOT reach this pane');
-    });
-  }
-
-  // A confirmed ✓ lingers briefly, fades, then clears — leaving the healthy
-  // titlebar with just its connection dot. Guarded so a newer state (a fresh
-  // send's …, or a late ✗) is never wiped by a stale timer.
-  function scheduleSuccessFade(model) {
-    clearTimeout(fadeTimers[model]);
-    fadeTimers[model] = setTimeout(() => {
-      if (paneResults[model] !== true) return;
-      if (paneBadges[model]) paneBadges[model].classList.add('fade');
-      fadeTimers[model] = setTimeout(() => {
-        if (paneResults[model] !== true) return;
-        delete paneResults[model];
-        renderResults();
-      }, FADE_DURATION_MS);
-    }, FADE_AFTER_MS);
-  }
-
-  // The background forwards each pane's injection result here, addressed only to
-  // this tab (so multiple open workspaces don't cross wires).
-  chrome.runtime.onMessage.addListener((request) => {
-    if (request && request.action === 'workspace_pane_result' && request.model in paneResults) {
-      paneResults[request.model] = !!request.ok;
-      renderResults();
-      if (request.ok) scheduleSuccessFade(request.model);
-    }
+  // whether the prompt's user turn rendered. Shown as a badge in each pane's
+  // titlebar, next to the connection dot. The tracker owns the ✓-fade and
+  // installs the workspace_pane_result listener; tile creation fills
+  // tracker.badges[model].
+  const tracker = MPBar.createResultTracker({
+    resultAction: 'workspace_pane_result',
+    targetNoun: 'pane'
   });
 
   function showNotice(text) {
@@ -200,7 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const badge = document.createElement('span');
       badge.className = 'pane-result';
-      paneBadges[model] = badge;
+      tracker.badges[model] = badge;
 
       const spacer = document.createElement('span');
       spacer.className = 'pane-title-spacer';
@@ -582,19 +491,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // relaxes from a pill to a rounded rect once it's multi-line. JS owns the
   // height entirely — the CSS only sets the single-line base.
   const promptShell = document.querySelector('.prompt-shell');
-  const PROMPT_BASE_HEIGHT = 40;  // matches #prompt height in the CSS
-  const PROMPT_MAX_HEIGHT = 100;  // ~4 lines
-
-  function autosizePrompt() {
-    promptEl.style.height = 'auto';
-    // Clamp to the base height as well: a single line must always come back
-    // to the 54px pill, whatever the height:auto measurement says.
-    const h = Math.min(Math.max(promptEl.scrollHeight, PROMPT_BASE_HEIGHT), PROMPT_MAX_HEIGHT);
-    promptEl.style.height = h + 'px';
-    promptShell.classList.toggle('multiline', h > PROMPT_BASE_HEIGHT + 4);
-  }
-
-  promptEl.addEventListener('input', autosizePrompt);
+  promptEl.addEventListener('input', () => MPBar.autosize(promptEl, promptShell));
 
   function send() {
     const text = promptEl.value.trim();
@@ -602,29 +499,23 @@ document.addEventListener('DOMContentLoaded', () => {
     sendBtn.disabled = true;
     sendBtn.textContent = 'Sending…';
     statusEl.textContent = '';
-    clearFadeTimers(); // a stale ✓-fade must not wipe this broadcast's fresh …
-    paneResults = {};
-    panes.forEach((p) => { paneResults[p.model] = 'pending'; });
-    renderResults();
+    tracker.start(panes.map((p) => p.model));
 
     chrome.runtime.sendMessage({ action: 'workspace_broadcast', prompt: text }, (response) => {
       sendBtn.disabled = false;
       sendBtn.textContent = 'Send';
       if (chrome.runtime.lastError || !response || response.status !== 'success') {
-        paneResults = {};
-        renderResults();
+        tracker.reset();
         statusEl.textContent = 'Failed: ' +
           (chrome.runtime.lastError
             ? chrome.runtime.lastError.message
             : (response && response.error) || 'no response');
         return;
       }
-      paneResults = {};
-      response.models.forEach((m) => { paneResults[m] = 'pending'; });
-      (response.failed || []).forEach((m) => { paneResults[m] = false; });
-      renderResults();
+      tracker.start(response.models);
+      (response.failed || []).forEach((m) => tracker.set(m, false));
       promptEl.value = '';
-      autosizePrompt();
+      MPBar.autosize(promptEl, promptShell);
       promptEl.focus();
     });
   }
@@ -640,14 +531,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- Export this tab's chats ----------------------------------------------
   const exportBtn = document.getElementById('ws-export');
   const exportFormat = document.getElementById('ws-export-format');
-
-  // Mirror the popup's saved export-format preference.
-  chrome.storage.local.get(['exportFormatPref'], (r) => {
-    if (r.exportFormatPref) exportFormat.value = r.exportFormatPref;
-  });
-  exportFormat.addEventListener('change', () => {
-    chrome.storage.local.set({ exportFormatPref: exportFormat.value });
-  });
+  MPBar.setupExportFormat(exportFormat);
 
   exportBtn.addEventListener('click', () => {
     exportBtn.disabled = true;

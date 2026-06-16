@@ -242,6 +242,17 @@ h2 {
 /* Private/temporary-chat toggle: a full-width card matching the model cards'
    pill + switch idiom. The checkbox itself is visually hidden but keeps focus,
    so the row stays keyboard operable. */
+/* The two pre-launch toggles sit side by side (Shared prompt bar | Private). */
+.toggle-pair {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.toggle-pair .private-row {
+  flex: 1;
+  min-width: 0; /* let the label ellipsis kick in rather than overflow */
+}
+
 .private-row {
   display: flex;
   align-items: center;

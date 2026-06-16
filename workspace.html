@@ -3,33 +3,11 @@
 <head>
   <meta charset="utf-8">
   <title>Multi-Prompt — Tiled in a Tab</title>
+  <link rel="stylesheet" href="bar.css">
   <style>
-    :root {
-      --bg: #f7f9fa;
-      --panel: #ffffff;
-      --border: #d8dee9;
-      --text: #1a1d29;
-      --muted: #5d6478;
-      --sliver-width: 28px; /* collapsed-tile strip; JS sizes panes from this too */
-    }
-    [data-theme="dark"] {
-      --bg: #0f111a;
-      --panel: #161925;
-      --border: #2a2f45;
-      --text: #e7e9f0;
-      --muted: #8a90a8;
-    }
-    html, body { height: 100%; margin: 0; }
-    body {
-      display: flex;
-      flex-direction: column;
-      /* Fixed-viewport app layout — never show a page scrollbar (its track
-         otherwise appears as a dead strip beside the rightmost tile). */
-      overflow: hidden;
-      background: var(--bg);
-      color: var(--text);
-      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }
+    /* Colour vars, body layout, and all bottom-bar styling live in bar.css;
+       only the workspace's tile/pane/splitter chrome is page-specific. */
+    :root { --sliver-width: 28px; } /* collapsed-tile strip; JS sizes panes from this too */
     .panes { flex: 1; display: flex; min-height: 0; }
     .pane {
       flex: 1;
@@ -117,221 +95,13 @@
     .pane.collapsed h2:hover { background: rgba(124, 58, 237, 0.10); }
     /* Sliver stacking: grip (reorder) on top, then the rotated title. */
     .pane.collapsed .pane-grip { order: -1; }
-    .pane-dot {
-      display: inline-block;
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      vertical-align: middle;
-      background: var(--muted);
-      transition: background 0.2s ease, box-shadow 0.2s ease;
-    }
-    .pane-dot.connected {
-      background: #22c55e;
-      box-shadow: 0 0 5px rgba(34, 197, 94, 0.7);
-    }
-    .pane-dot.disconnected {
-      background: #ef4444;
-      box-shadow: 0 0 5px rgba(239, 68, 68, 0.7);
-    }
     /* Ghost = this pane is in private/temporary chat mode (status-polled). */
     .pane-ghost { display: none; color: #7c3aed; }
     .pane-ghost.on { display: flex; }
-    /* Last-broadcast result for this pane (… sending / ✓ delivered / ✗ failed).
-       A ✓ is transient: it lingers a few seconds, then fades out (JS adds
-       .fade, then clears the badge) — failures persist until the next send. */
-    .pane-result { font-size: 11px; font-weight: 700; }
-    .pane-result.pending { color: var(--muted); }
-    .pane-result.ok { color: #22c55e; }
-    .pane-result.fail { color: #ef4444; }
-    @media (prefers-reduced-motion: no-preference) {
-      .pane-result { transition: opacity 0.6s ease; }
-    }
-    .pane-result.fade { opacity: 0; }
     .pane iframe { flex: 1; width: 100%; border: 0; background: #fff; }
-    .composer {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 6px 12px;
-      background: var(--panel);
-      border-top: 1px solid var(--border);
-    }
-    /* The shared prompt is the star: a full-width pill with a slowly drifting
-       multicolor border and a soft glow — eye-catching, not overpowering. */
-    .prompt-shell {
-      flex: 1;
-      display: flex;
-      align-items: flex-end;
-      gap: 8px;
-      min-width: 0;
-      box-sizing: border-box;
-      padding: 5px 5px 5px 20px;
-      border: 2px solid transparent;
-      border-radius: 999px;
-      background:
-        linear-gradient(var(--panel), var(--panel)) padding-box,
-        linear-gradient(120deg, #7c3aed, #d946ef, #06b6d4, #22c55e, #7c3aed) border-box;
-      background-size: 100% 100%, 300% 300%;
-      box-shadow: 0 0 12px rgba(124, 58, 237, 0.22);
-      transition: box-shadow 0.2s ease;
-    }
-    /* When the prompt grows to multiple lines, a full pill looks broken —
-       relax to a rounded rect. */
-    .prompt-shell.multiline { border-radius: 24px; }
-    @media (prefers-reduced-motion: no-preference) {
-      .prompt-shell { animation: prompt-glow-pan 8s linear infinite; }
-    }
-    .prompt-shell:focus-within {
-      box-shadow: 0 0 20px rgba(124, 58, 237, 0.38);
-    }
-    @keyframes prompt-glow-pan {
-      0%   { background-position: 0 0, 0% 50%; }
-      50%  { background-position: 0 0, 100% 50%; }
-      100% { background-position: 0 0, 0% 50%; }
-    }
-    #prompt {
-      flex: 1;
-      height: 40px; /* single-line base; autosizePrompt() grows/caps it from JS */
-      overflow-y: auto;
-      resize: none;
-      box-sizing: border-box;
-      padding: 10px 0;
-      border: none;
-      background: transparent;
-      color: inherit;
-      font: inherit;
-    }
-    #prompt:focus { outline: none; }
-    #send {
-      height: 38px;
-      min-width: 108px; /* fits the in-flight "Sending…" label without resizing */
-      padding: 0 22px;
-      border: none;
-      border-radius: 999px;
-      background: linear-gradient(135deg, #7c3aed 0%, #d946ef 100%);
-      color: #fff;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    #send:disabled { opacity: 0.5; cursor: default; }
-    /* Only used for whole-broadcast failures; per-pane results live in the
-       pane titlebars. Hidden when empty so it doesn't reserve row space. */
-    #status { font-size: 11px; color: #ef4444; max-width: 240px; }
-    #status:empty { display: none; }
-    /* Match the prompt pill's outer height (textarea 40 + 5px padding and 2px
-       border each side = 54) so the whole bottom bar reads as one row of pills. */
-    #ws-export-format {
-      height: 54px;
-      box-sizing: border-box;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      color: inherit;
-      font: inherit;
-      padding: 0 42px 0 24px;
-      /* Native selects pin their arrow against the right edge, which collides
-         with the pill curve — draw our own chevron, inset from the border. */
-      appearance: none;
-      -webkit-appearance: none;
-      background-color: var(--bg);
-      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%235d6478' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-      background-repeat: no-repeat;
-      background-position: right 20px center;
-    }
-    [data-theme="dark"] #ws-export-format {
-      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%238a90a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
-    }
-    #ws-export {
-      height: 54px;
-      box-sizing: border-box;
-      padding: 0 20px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: transparent;
-      color: inherit;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    #ws-export:disabled { opacity: 0.5; cursor: default; }
-    /* Private-chat pill: same 54px pill as Export, plus an "all panes are
-       private" active state. */
-    #ws-private {
-      height: 54px;
-      box-sizing: border-box;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 0 20px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      background: transparent;
-      color: inherit;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    #ws-private svg { display: block; }
-    #ws-private:disabled { cursor: default; }
-    #ws-private.active {
-      border-color: #7c3aed;
-      color: #7c3aed;
-      box-shadow: 0 0 8px rgba(124, 58, 237, 0.35);
-    }
-    /* Theme selector pill, matching the popup's segmented toggle. */
-    .theme-toggle {
-      height: 54px;
-      box-sizing: border-box;
-      display: flex;
-      align-items: center;
-      gap: 2px;
-      padding: 0 4px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-    }
-    .theme-toggle label { cursor: pointer; }
-    /* Visually hidden but still focusable, so the radio group stays keyboard
-       operable (arrow keys switch theme). */
-    .theme-toggle input {
-      position: absolute;
-      opacity: 0;
-      width: 0;
-      height: 0;
-      margin: 0;
-      pointer-events: none;
-    }
-    /* 44px inner pills inside the 54px group: the 4px gutter (+1px border)
-       keeps the inner curves concentric with the outer rounded corner. */
-    .theme-toggle span {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 44px;
-      box-sizing: border-box;
-      padding: 0 14px;
-      border-radius: 999px;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--muted);
-      transition: all 0.2s ease;
-    }
-    .theme-toggle input:checked + span {
-      background: #7c3aed;
-      color: #fff;
-      box-shadow: 0 0 8px rgba(124, 58, 237, 0.5);
-    }
-    /* Keyboard focus rings (mouse clicks don't trigger :focus-visible). */
-    .pane-btn:focus-visible,
-    #send:focus-visible,
-    #ws-export:focus-visible,
-    #ws-private:focus-visible,
-    #ws-export-format:focus-visible {
-      outline: 2px solid #7c3aed;
-      outline-offset: 2px;
-    }
-    .theme-toggle input:focus-visible + span {
+    /* Keyboard focus ring for the tile titlebar buttons (the bar controls'
+       focus styling is in bar.css). */
+    .pane-btn:focus-visible {
       outline: 2px solid #7c3aed;
       outline-offset: 2px;
     }
@@ -351,13 +121,13 @@
     <div class="prompt-shell">
       <!-- rows=1: without it the browser default (rows=2) makes height:auto
            measure two lines tall, so the first keystroke ratcheted the shell
-           from 54px to 73px for good (autosizePrompt measures via height:auto). -->
+           from 54px to 73px for good (MPBar.autosize measures via height:auto). -->
       <textarea id="prompt" rows="1"
         placeholder="Type a prompt — Enter sends it to every pane (Shift+Enter for a newline)"></textarea>
       <button id="send" type="button">Send</button>
     </div>
     <span id="status"></span>
-    <button id="ws-private" type="button"
+    <button id="ws-private" class="bar-private" type="button"
       title="Switch all panes to private/temporary chat — this chat will NOT be saved to Saved Sessions">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
         fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -367,11 +137,11 @@
       </svg>
       <span id="ws-private-label">Private</span>
     </button>
-    <select id="ws-export-format" title="Export format">
+    <select id="ws-export-format" class="bar-select" title="Export format">
       <option value="markdown">Markdown (.md)</option>
       <option value="pdf">PDF / Print (.pdf)</option>
     </select>
-    <button id="ws-export" type="button" title="Export this tab's chats">Export</button>
+    <button id="ws-export" class="bar-btn" type="button" title="Export this tab's chats">Export</button>
     <div class="theme-toggle" title="Select Theme">
       <label>
         <input type="radio" name="theme" value="auto" checked />
@@ -388,6 +158,7 @@
     </div>
   </div>
   <script src="align.js"></script>
+  <script src="bar-common.js"></script>
   <script src="workspace.js"></script>
 </body>
 </html>

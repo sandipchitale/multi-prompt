@@ -90,6 +90,8 @@ manifest.json        Manifest V3 config, permissions, content-script matches
 background.js        Service worker: tiling, broadcast, turn ids, sessions, DNR rules
 popup.html/.css/.js  Popup dashboard (model selection, modes, export, sessions)
 align.js             Shared cross-model turn alignment + export helpers
+bar.css              Shared bottom-bar styling (workspace composer + prompt bar)
+bar-common.js        Shared bottom-bar JS (theme, prompt autosize, delivery badges, export-format pref)
 workspace.html/.js   Tiled-in-a-Tab page: iframe tiles (reorder/collapse/maximize), splitters, shared prompt box, Export
 promptbar.html/.js   Tiled-Windows shared prompt bar: docked app window, broadcasts to every tiled window (Private/Export/theme)
 export.html/.js      Markdown → print/PDF transcript view

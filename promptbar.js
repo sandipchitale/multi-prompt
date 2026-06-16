@@ -3,15 +3,17 @@
 // window (the same `broadcast_prompt` path native typing uses), giving Safari —
 // where Tiled in a Tab can't run — the same "type once" experience. The bar is
 // itself a managed window, so the background accepts it as a broadcast source
-// and tears it down with the rest of the session.
+// and tears it down with the rest of the session. Shared bottom-bar behaviour
+// (theme, autosize, delivery badges, export-format pref) lives in bar-common.js.
 
 document.addEventListener('DOMContentLoaded', () => {
   const chipsEl = document.getElementById('chips');
   const promptEl = document.getElementById('prompt');
+  const promptShell = document.querySelector('.prompt-shell');
   const sendBtn = document.getElementById('send');
   const statusEl = document.getElementById('status');
 
-  const MODEL_TITLES = { gemini: 'Gemini', claude: 'Claude', chatgpt: 'ChatGPT' };
+  MPBar.setupTheme();
 
   // Panel button: opens the Multi-Prompt popup (model selection, tile order,
   // saved sessions). Content scripts can't open the action popup, but the
@@ -26,55 +28,27 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // --- Theme: follow the popup's setting (auto / light / dark) --------------
-  let themePref = 'auto';
-
-  function applyTheme() {
-    const dark = themePref === 'dark' ||
-      (themePref === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-    const radio = document.querySelector('input[name="theme"][value="' + themePref + '"]');
-    if (radio) radio.checked = true;
-  }
-  chrome.storage.local.get(['themePref'], (result) => {
-    themePref = result.themePref || 'auto';
-    applyTheme();
-  });
-  document.querySelectorAll('input[name="theme"]').forEach((radio) => {
-    radio.addEventListener('change', (e) => {
-      themePref = e.target.value;
-      applyTheme();
-      chrome.storage.local.set({ themePref: themePref });
-    });
-  });
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
-  chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === 'local' && changes.themePref) {
-      themePref = changes.themePref.newValue || 'auto';
-      applyTheme();
-    }
-  });
-
   // --- Per-model delivery indicators ----------------------------------------
   // One chip per model: a connection dot (does a live tiled window exist?) plus
-  // a result badge (… sending / ✓ delivered / ✗ failed) for the last broadcast.
+  // a result badge (… / ✓ / ✗) for the last broadcast, driven by the tracker.
   let order = [];
   const dots = {};
-  const badges = {};
-  let results = {}; // model -> 'pending' | true | false
-  const fadeTimers = {};
-  const FADE_AFTER_MS = 3500;
-  const FADE_DURATION_MS = 600;
+  const tracker = MPBar.createResultTracker({
+    resultAction: 'promptbar_pane_result',
+    targetNoun: 'window'
+  });
 
   function buildChips(models) {
     order = models.slice();
     chipsEl.innerHTML = '';
+    Object.keys(dots).forEach((m) => delete dots[m]);
+    Object.keys(tracker.badges).forEach((m) => delete tracker.badges[m]);
     order.forEach((model) => {
       const chip = document.createElement('span');
       chip.className = 'chip';
       const name = document.createElement('span');
       name.className = 'chip-name';
-      name.textContent = MODEL_TITLES[model] || model;
+      name.textContent = MPBar.MODEL_TITLES[model] || model;
       const dot = document.createElement('span');
       dot.className = 'pane-dot';
       const badge = document.createElement('span');
@@ -82,66 +56,14 @@ document.addEventListener('DOMContentLoaded', () => {
       chip.append(name, dot, badge);
       chipsEl.appendChild(chip);
       dots[model] = dot;
-      badges[model] = badge;
+      tracker.badges[model] = badge;
     });
   }
-
-  function renderResults() {
-    order.forEach((model) => {
-      const badge = badges[model];
-      if (!badge) return;
-      badge.classList.remove('fade');
-      if (!(model in results)) {
-        badge.textContent = '';
-        badge.className = 'pane-result';
-        badge.title = '';
-        return;
-      }
-      const state = results[model];
-      badge.textContent = state === 'pending' ? '…' : (state ? '✓' : '✗');
-      badge.className = 'pane-result ' +
-        (state === 'pending' ? 'pending' : (state ? 'ok' : 'fail'));
-      badge.title = state === 'pending'
-        ? 'Sending the last prompt…'
-        : (state ? 'Last prompt delivered' : 'Last prompt did NOT reach this window');
-    });
-  }
-
-  function clearFadeTimers() {
-    Object.keys(fadeTimers).forEach((model) => {
-      clearTimeout(fadeTimers[model]);
-      delete fadeTimers[model];
-    });
-  }
-
-  // A confirmed ✓ lingers briefly, then fades out, leaving just the dot.
-  function scheduleSuccessFade(model) {
-    clearTimeout(fadeTimers[model]);
-    fadeTimers[model] = setTimeout(() => {
-      if (results[model] !== true) return;
-      if (badges[model]) badges[model].classList.add('fade');
-      fadeTimers[model] = setTimeout(() => {
-        if (results[model] !== true) return;
-        delete results[model];
-        renderResults();
-      }, FADE_DURATION_MS);
-    }, FADE_AFTER_MS);
-  }
-
-  // The background forwards each tiled window's injection result here.
-  chrome.runtime.onMessage.addListener((request) => {
-    if (request && request.action === 'promptbar_pane_result' && request.model in results) {
-      results[request.model] = !!request.ok;
-      renderResults();
-      if (request.ok) scheduleSuccessFade(request.model);
-    }
-  });
 
   // Learn this session's model order, then poll connection + private state.
   chrome.runtime.sendMessage({ action: 'promptbar_init' }, (response) => {
     void chrome.runtime.lastError;
     buildChips((response && response.order) || []);
-    renderResults();
   });
 
   const privateBtn = document.getElementById('pb-private');
@@ -154,7 +76,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!response || response.status !== 'success') return;
       if (response.order && response.order.length && response.order.length !== order.length) {
         buildChips(response.order);
-        renderResults();
       }
       const connected = new Set(response.connected || []);
       order.forEach((model) => {
@@ -201,17 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // --- Shared prompt --------------------------------------------------------
-  const promptShell = document.querySelector('.prompt-shell');
-  const PROMPT_BASE_HEIGHT = 40;
-  const PROMPT_MAX_HEIGHT = 100;
-
-  function autosizePrompt() {
-    promptEl.style.height = 'auto';
-    const h = Math.min(Math.max(promptEl.scrollHeight, PROMPT_BASE_HEIGHT), PROMPT_MAX_HEIGHT);
-    promptEl.style.height = h + 'px';
-    promptShell.classList.toggle('multiline', h > PROMPT_BASE_HEIGHT + 4);
-  }
-  promptEl.addEventListener('input', autosizePrompt);
+  promptEl.addEventListener('input', () => MPBar.autosize(promptEl, promptShell));
 
   function send() {
     const text = promptEl.value.trim();
@@ -219,10 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
     sendBtn.disabled = true;
     sendBtn.textContent = 'Sending…';
     statusEl.textContent = '';
-    clearFadeTimers();
-    results = {};
-    order.forEach((model) => { results[model] = 'pending'; });
-    renderResults();
+    tracker.start(order);
 
     // No `source`: handleBroadcast then injects into EVERY selected model. The
     // background returns once the broadcast is dispatched; per-window outcomes
@@ -231,14 +139,13 @@ document.addEventListener('DOMContentLoaded', () => {
       sendBtn.disabled = false;
       sendBtn.textContent = 'Send';
       if (chrome.runtime.lastError || !response || response.status !== 'broadcasted') {
-        results = {};
-        renderResults();
+        tracker.reset();
         statusEl.textContent = 'Failed: ' +
           (chrome.runtime.lastError ? chrome.runtime.lastError.message : 'no response');
         return;
       }
       promptEl.value = '';
-      autosizePrompt();
+      MPBar.autosize(promptEl, promptShell);
       promptEl.focus();
     });
   }
@@ -254,13 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- Export the tiled windows' chats --------------------------------------
   const exportBtn = document.getElementById('pb-export');
   const exportFormat = document.getElementById('pb-export-format');
-
-  chrome.storage.local.get(['exportFormatPref'], (r) => {
-    if (r.exportFormatPref) exportFormat.value = r.exportFormatPref;
-  });
-  exportFormat.addEventListener('change', () => {
-    chrome.storage.local.set({ exportFormatPref: exportFormat.value });
-  });
+  MPBar.setupExportFormat(exportFormat);
 
   exportBtn.addEventListener('click', () => {
     if (!order.length) return;
