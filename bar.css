@@ -1,10 +1,10 @@
 /* Shared styling for the two Multi-Prompt bottom bars: the Tiled-in-a-Tab
    workspace composer (workspace.html) and the Tiled-Windows shared prompt bar
    (promptbar.html). Page-only rules (workspace tiles/splitters, the prompt
-   bar's chips row and [M] button) stay inline in their own pages.
+   bar's chips row) stay inline in their own pages.
 
-   The three controls that the page scripts look up by id (#ws-…/#pb-…) are
-   styled here via shared classes (.bar-select/.bar-btn/.bar-private) so the
+   The controls that the page scripts look up by id (#ws-…/#pb-…) are styled
+   here via shared classes (.bar-menu/.bar-select/.bar-btn/.bar-private) so the
    ids stay free as JS hooks. */
 
 :root {
@@ -154,6 +154,27 @@ body {
 [data-theme="dark"] .bar-select {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%238a90a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
 }
+/* Panel button (the [M] that lived as a floating button in each tiled window):
+   a 54px gradient pill matching the brand mark, leftmost in the row so it reads
+   as the workspace's home control. Shared by both bars so they stay uniform. */
+.bar-menu {
+  flex: 0 0 auto;
+  height: 54px;
+  width: 54px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #7c3aed 0%, #d946ef 100%);
+  color: #fff;
+  font: 700 22px/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(124, 58, 237, 0.35);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.bar-menu:hover { box-shadow: 0 0 14px rgba(124, 58, 237, 0.5); }
+@media (prefers-reduced-motion: no-preference) {
+  .bar-menu:hover { transform: scale(1.05); }
+}
 .bar-btn {
   height: 54px;
   box-sizing: border-box;
@@ -236,6 +257,7 @@ body {
 }
 /* Keyboard focus rings (mouse clicks don't trigger :focus-visible). */
 #send:focus-visible,
+.bar-menu:focus-visible,
 .bar-btn:focus-visible,
 .bar-private:focus-visible,
 .bar-select:focus-visible {

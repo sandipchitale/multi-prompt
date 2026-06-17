@@ -404,6 +404,17 @@ h2 {
   background: rgba(90, 50, 250, 0.1);
 }
 
+/* Outline + disabled: the base .glow-button:disabled rule is overridden by the
+   later, equal-specificity .glow-button.outline rule, so a disabled outline
+   button kept its accent border/text and only the cursor changed. Restate the
+   muted look here (and dim it) so "not applicable" reads at a glance. */
+.glow-button.outline:disabled {
+  background: transparent;
+  border: 2px solid var(--btn-border-disabled);
+  color: #5a6072; /* matches .glow-button:disabled */
+  opacity: 0.55;
+}
+
 /* Theme Toggle Styles */
 .theme-toggle {
   margin-left: auto;

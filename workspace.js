@@ -456,6 +456,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }, 2000);
 
+  // --- Panel button ----------------------------------------------------------
+  // Opens the Multi-Prompt popup (model selection, tile order, saved sessions).
+  // The service worker opens the action popup (falling back to a standalone
+  // window). Mirrors the prompt bar's [M] so both bars read the same.
+  const menuBtn = document.getElementById('ws-menu');
+  menuBtn.addEventListener('click', () => {
+    menuBtn.textContent = '…';
+    chrome.runtime.sendMessage({ action: 'open_popup' }, () => {
+      void chrome.runtime.lastError;
+      menuBtn.textContent = 'M';
+    });
+  });
+
   // --- Switch all panes to private/temporary chat ----------------------------
   const privateBtn = document.getElementById('ws-private');
   const privateBtnLabel = document.getElementById('ws-private-label');
