@@ -452,22 +452,28 @@ async function openActionPopup(sender) {
 // Open popup.html as a small standalone window, reusing an existing one rather
 // than stacking duplicates.
 async function openPopupWindow() {
-  const url = chrome.runtime.getURL('popup.html');
+  const base = chrome.runtime.getURL('popup.html');
+  // The #window marker tells popup.js it's running as a standalone window (no
+  // toolbar to auto-size against), so it sizes itself to its rendered content.
+  const url = base + '#window';
   try {
     const wins = await chrome.windows.getAll({ populate: true });
     for (const w of wins) {
-      if (w.tabs && w.tabs.some(t => t.url && t.url.split('#')[0] === url)) {
+      if (w.tabs && w.tabs.some(t => t.url && t.url.split('#')[0] === base)) {
         await chrome.windows.update(w.id, { focused: true });
         return;
       }
     }
   } catch (e) { /* fall through to creating a fresh window */ }
+  // Open at the popup's natural width with a modest starting height; popup.js
+  // corrects the height to fit its content once rendered (the toolbar action
+  // popup auto-sizes the same way, so the standalone fallback should too).
   const win = await chrome.windows.create({
-    url: url, type: "popup", width: 800, height: 720, focused: true
+    url: url, type: "popup", width: 800, height: 400, focused: true
   });
   // Safari ignores the size passed to create; re-apply it once the window exists.
   try {
-    await chrome.windows.update(win.id, { state: "normal", width: 800, height: 720 });
+    await chrome.windows.update(win.id, { state: "normal", width: 800, height: 400 });
   } catch (e) { /* best effort */ }
 }
 

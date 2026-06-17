@@ -683,6 +683,109 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initial state check
   updateState();
   loadSessions();
+
+  // --- Standalone-window self-sizing -------------------------------------
+  //
+  // When opened as the real toolbar action popup, the browser auto-sizes the
+  // popup to its content. But on Safari the background falls back to opening
+  // popup.html in a standalone window (openPopupWindow, marked with #window),
+  // which has no toolbar to size against — so it would otherwise be a fixed,
+  // arbitrary height. Here the page measures its own content and resizes its
+  // window to fit, matching the action-popup experience. The toolbar-popup
+  // case has no #window marker and skips all of this.
+  if (location.hash.slice(1) === 'window' && chrome.windows && chrome.windows.getCurrent) {
+    let fitRaf = 0;
+    let frame = null;        // window chrome delta (title bar / borders), measured once
+    let centered = false;    // only center on the first fit
+    let desired = null;      // last content-fit OUTER size; the target we snap back to
+
+    const measure = () => {
+      // Measure the BODY box, not documentElement: when content is shorter than
+      // the window, <html> stretches to fill the viewport so its scrollHeight
+      // reports the window height, never the content. The body box stays at its
+      // content height (incl. its 14px padding).
+      const contentH = Math.ceil(document.body.getBoundingClientRect().height);
+      // The frame delta sits outside the viewport and is constant for a given
+      // window, so capture it once from a stable read and reuse it — never
+      // re-read outerHeight later (it's bogus mid-drag, and huge once the
+      // platform has ballooned the window).
+      if (!frame) {
+        frame = {
+          w: Math.max(0, window.outerWidth - window.innerWidth),
+          h: Math.max(0, window.outerHeight - window.innerHeight)
+        };
+      }
+      const screen = currentScreenInfo();
+      return {
+        width: Math.round(800 + frame.w), // 800 = body width in popup.css
+        height: Math.round(Math.min(contentH + frame.h, screen.availHeight || (contentH + frame.h))),
+        screen
+      };
+    };
+
+    const fitWindowToContent = () => {
+      cancelAnimationFrame(fitRaf);
+      fitRaf = requestAnimationFrame(() => {
+        const m = measure();
+        desired = { width: m.width, height: m.height };
+        const update = { width: m.width, height: m.height };
+        // Center on screen the first time only; later fits keep the position.
+        if (!centered) {
+          update.left = Math.round(m.screen.availLeft + Math.max(0, (m.screen.availWidth - m.width) / 2));
+          update.top = Math.round(m.screen.availTop + Math.max(0, (m.screen.availHeight - m.height) / 2));
+          centered = true;
+        }
+        chrome.windows.getCurrent((win) => {
+          if (chrome.runtime.lastError || !win) return;
+          chrome.windows.update(win.id, update);
+        });
+      });
+    };
+
+    // The popup's content is fixed-width and self-sizing, so it should open at
+    // its content-fit size. But Safari/macOS balloons the window the first time
+    // it's dragged (mid-drag metric glitches and edge-tiling both grow it). We
+    // can't prevent that, so snap it back to `desired` ONCE after a resize
+    // settles, then detach — later, deliberate user resizes are left alone.
+    //
+    // The snap is attached only AFTER startup has settled (below), so any resize
+    // it sees is real — no need to read (unreliable, on Safari) live window
+    // metrics to tell our own sizing apart from a drag. `state: "normal"` first
+    // un-tiles the window, otherwise Safari ignores the width/height when macOS
+    // has tiled/zoomed it.
+    let snapT = 0;
+    const onResize = () => {
+      clearTimeout(snapT);
+      snapT = setTimeout(() => {
+        window.removeEventListener('resize', onResize); // one-shot
+        if (!desired) return;
+        chrome.windows.getCurrent((win) => {
+          if (chrome.runtime.lastError || !win) return;
+          chrome.windows.update(win.id, { state: "normal", width: desired.width, height: desired.height });
+        });
+      }, 400);
+    };
+
+    // Refit while the page settles (initial render + the async-loaded sessions
+    // list change the content height). Body width is fixed, so the window
+    // resize doesn't change body height — no feedback loop.
+    let observer = null;
+    if (window.ResizeObserver) {
+      observer = new ResizeObserver(fitWindowToContent);
+      observer.observe(document.body);
+    }
+    window.addEventListener('load', () => {
+      fitWindowToContent();
+      // Once content has settled: stop observing, and only NOW start listening
+      // for a drag-induced resize to snap back from (so startup's own resizes
+      // don't consume the one-shot).
+      setTimeout(() => {
+        if (observer) observer.disconnect();
+        window.addEventListener('resize', onResize);
+      }, 1500);
+    });
+    fitWindowToContent();
+  }
 });
 
 // getChatbotTurns / promptsMatch / alignHistory live in align.js (shared with
