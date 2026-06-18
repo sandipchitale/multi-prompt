@@ -32,6 +32,9 @@
   // true = Enter inserts a newline, Shift+Enter submits.
   let swapEnter = false;
   let switchUI = null;
+  // Popup-controlled gate for the whole feature. Default true: on unless the
+  // popup switch turns it off.
+  let uiEnabled = true;
 
   const SITES = {
     GEMINI:  { host: 'gemini.google.com', inject: injectGemini },
@@ -46,11 +49,23 @@
     ? (chrome.storage.sync || chrome.storage.local) : null;
 
   const STORAGE_KEY = 'paneSwapEnter';
+  // Popup switch that controls whether this whole Enter-key option is active —
+  // both the injected switch and its key handling. The popup writes it to
+  // chrome.storage.local, so read it from there (not the sync-preferred area).
+  const UI_ENABLED_KEY = 'enterOptionEnabled';
+  const localArea = (typeof chrome !== 'undefined' && chrome.storage) ? chrome.storage.local : null;
 
   if (storageArea) {
     storageArea.get({ [STORAGE_KEY]: false }, (items) => {
       swapEnter = items ? !!items[STORAGE_KEY] : false;
       updateSwitchState();
+    });
+  }
+
+  if (localArea) {
+    localArea.get({ [UI_ENABLED_KEY]: true }, (items) => {
+      uiEnabled = items ? items[UI_ENABLED_KEY] !== false : true;
+      applyUIEnabled();
     });
   }
 
@@ -60,7 +75,24 @@
         swapEnter = !!changes[STORAGE_KEY].newValue;
         updateSwitchState();
       }
+      if (changes[UI_ENABLED_KEY]) {
+        uiEnabled = changes[UI_ENABLED_KEY].newValue !== false;
+        applyUIEnabled();
+      }
     });
+  }
+
+  // Add the switch when enabled, tear it down when disabled. The MutationObserver
+  // and interval below both go through inject(), which no-ops while disabled.
+  function applyUIEnabled() {
+    if (uiEnabled) inject();
+    else removeUI();
+  }
+
+  function removeUI() {
+    const existing = document.getElementById('mp-enter-option-switch');
+    if (existing) existing.remove();
+    switchUI = null;
   }
 
   function persist(value) {
@@ -245,6 +277,7 @@
   }
 
   function inject() {
+    if (!uiEnabled) return;
     let ui = document.getElementById('mp-enter-option-switch');
     if (!ui) ui = createSwitchUI();
     currentSite.inject(ui);
@@ -295,6 +328,7 @@
 
   function handleKey(e) {
     if (e.key !== 'Enter') return; // fast path
+    if (!uiEnabled) return;        // popup switch off — feature fully disabled
 
     // Ctrl+Enter toggles the option (all platforms).
     if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {

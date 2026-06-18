@@ -55,6 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionRenameCancel = document.getElementById('session-rename-cancel');
   const privateChatCheckbox = document.getElementById('private-chat');
   const sharedPromptBarCheckbox = document.getElementById('shared-prompt-bar');
+  const enterOptionCheckbox = document.getElementById('enter-option');
   let savedSessions = [];
 
   // Private/temporary chats: the background reads this pref when launching new
@@ -68,6 +69,15 @@ document.addEventListener('DOMContentLoaded', () => {
   if (sharedPromptBarCheckbox) {
     sharedPromptBarCheckbox.addEventListener('change', () => {
       chrome.storage.local.set({ sharedPromptBar: sharedPromptBarCheckbox.checked });
+    });
+  }
+
+  // Enter-key option: gates whether the per-pane Enter/Shift+Enter swap switch is
+  // injected into each chatbot's composer (content/enter-option.js reads this and
+  // adds/removes the UI live, and only runs its key handling while it is on).
+  if (enterOptionCheckbox) {
+    enterOptionCheckbox.addEventListener('change', () => {
+      chrome.storage.local.set({ enterOptionEnabled: enterOptionCheckbox.checked });
     });
   }
 
@@ -105,9 +115,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Load saved selections, order, and export format preference
-  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref', 'privateChatPref', 'sharedPromptBar'], (result) => {
+  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref', 'privateChatPref', 'sharedPromptBar', 'enterOptionEnabled'], (result) => {
     privateChatCheckbox.checked = !!result.privateChatPref;
     if (sharedPromptBarCheckbox) sharedPromptBarCheckbox.checked = !!result.sharedPromptBar;
+    // Default ON (preserve current behavior: the switch is shown unless turned off).
+    if (enterOptionCheckbox) enterOptionCheckbox.checked = result.enterOptionEnabled !== false;
     const sel = Array.isArray(result.selectedModels) ? result.selectedModels : ALL_MODELS.slice();
     selected = new Set(sel);
 
