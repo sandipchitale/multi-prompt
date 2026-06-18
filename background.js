@@ -249,7 +249,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'new_chat') {
-    handleNewChat(request.models, request.screenInfo, !!request.sharedPromptBar);
+    // The shared prompt bar is always opened — it is the way to broadcast to every
+    // tiled window now that typing in a chatbot's own box defaults to local-only.
+    handleNewChat(request.models, request.screenInfo, true);
     sendResponse({ status: 'new_chat_sent' });
   } else if (request.action === 'rearrange_tiles') {
     rearrangeTiles(request.models);
@@ -282,7 +284,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   } else if (request.action === 'open_session') {
-    openSession(request.folderId, request.screenInfo, !!request.sharedPromptBar).then(() => {
+    openSession(request.folderId, request.screenInfo, true).then(() => {
       sendResponse({ status: 'success' });
     }).catch(err => {
       sendResponse({ status: 'error', error: err.message || String(err) });
@@ -372,7 +374,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return true;
   } else if (request.action === 'workspace_broadcast') {
-    handleWorkspaceBroadcast(request.prompt, sender).then(result => {
+    handleWorkspaceBroadcast(request.prompt, sender, request.source).then(result => {
       sendResponse(result);
     }).catch(err => {
       sendResponse({ status: 'error', error: err.message || String(err) });
@@ -1960,13 +1962,18 @@ function sendToFrameWithRetry(frame, message) {
 
 // One workspace's shared prompt box → every pane in THAT tab (identified by the
 // sender), with one shared turn id so export alignment works unchanged.
-async function handleWorkspaceBroadcast(prompt, sender) {
+// `source`, when set, is the model that originated the prompt by direct typing in
+// its own pane (broadcast-on-typing). That pane already submitted locally, so it is
+// excluded from the targets to avoid a double submit. The shared prompt pill sends
+// no `source`, so it keeps targeting every pane.
+async function handleWorkspaceBroadcast(prompt, sender, source) {
   if (!sender || !sender.tab) return { status: 'error', error: 'Unknown workspace tab.' };
   const entry = await getWorkspaceForTab(sender.tab.id);
-  const models = entry ? Object.keys(entry.frames || {}) : [];
-  if (!models.length) {
+  const allModels = entry ? Object.keys(entry.frames || {}) : [];
+  if (!allModels.length) {
     return { status: 'error', error: 'No chatbot panes are ready yet.' };
   }
+  const models = source ? allModels.filter(m => m !== source) : allModels;
   const turnId = generateTurnId();
   const results = await Promise.all(models.map(async (model) => ({
     model: model,
@@ -1977,7 +1984,9 @@ async function handleWorkspaceBroadcast(prompt, sender) {
   })));
   const sent = results.filter(r => r.delivered).map(r => r.model);
   const failed = results.filter(r => !r.delivered).map(r => r.model);
-  if (!sent.length) {
+  // Only-source case (no other panes to target) is success — the source already
+  // submitted locally. Treat "had targets but none accepted" as a real failure.
+  if (models.length && !sent.length) {
     return { status: 'error', error: 'No pane accepted the prompt (' + failed.join(', ') + ').' };
   }
   // Persist the turn so a Tiled-in-a-Tab chat is saved like a tiled one (the

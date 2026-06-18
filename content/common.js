@@ -44,6 +44,12 @@
   // workspace page). Set in init(); used to report injection results.
   let isWorkspacePane = false;
 
+  // When true, typing directly in this chatbot's own prompt box also broadcasts to
+  // the other panes. Default false: a direct keystroke submits only here; the shared
+  // prompt box is the way to send to all. Read from chrome.storage.local in init()
+  // and kept live via storage.onChanged.
+  let broadcastOnType = false;
+
   function getUserTurnEls() {
     if (!siteConfig || !siteConfig.userTurnSelector) return [];
     return Array.from(document.querySelectorAll(siteConfig.userTurnSelector));
@@ -138,8 +144,16 @@
     lastBroadcastPrompt = prompt;
     lastBroadcastTime = now;
 
+    // A workspace pane (Tiled in a Tab) is not in the managed-window set, so the
+    // managed-window-gated broadcast_prompt path would be blocked. Route it through
+    // the tab-scoped workspace path instead, carrying `source` so the typing pane
+    // isn't re-injected. Tiled Windows / top frames use the original path.
+    const message = isWorkspacePane
+      ? { action: 'workspace_broadcast', prompt: prompt, source: source }
+      : { action: 'broadcast_prompt', prompt: prompt, source: source };
+
     chrome.runtime.sendMessage(
-      { action: 'broadcast_prompt', prompt: prompt, source: source },
+      message,
       (response) => {
         void chrome.runtime.lastError;
         if (onTurnId && response && response.turnId) onTurnId(response.turnId);
@@ -677,6 +691,22 @@
     if (!isTopFrame && !isPaneRoot) return;
     isWorkspacePane = isPaneRoot;
 
+    // Whether a direct keystroke in this box also broadcasts to the other panes.
+    // Read once, then track live so flipping the popup switch takes effect without
+    // reloading the chats.
+    if (chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get({ broadcastOnTypePref: false }, (items) => {
+        broadcastOnType = items ? !!items.broadcastOnTypePref : false;
+      });
+    }
+    if (chrome.storage && chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName === 'local' && changes.broadcastOnTypePref) {
+          broadcastOnType = !!changes.broadcastOnTypePref.newValue;
+        }
+      });
+    }
+
     requestManagedButton();
 
     // A pane root announces which model it hosts so the shared prompt box can
@@ -770,9 +800,12 @@
       e.stopPropagation();
 
       // Capture the user-turn count before we submit so our own rendered turn
-      // can be tagged with the same id the broadcast targets receive.
-      const beforeCount = getUserTurnEls().length;
-      broadcastPrompt(prompt, config.source, (turnId) => tagNewUserTurn(turnId, beforeCount));
+      // can be tagged with the same id the broadcast targets receive. Only broadcast
+      // to the other panes when the user opted in; otherwise this submits here only.
+      if (broadcastOnType) {
+        const beforeCount = getUserTurnEls().length;
+        broadcastPrompt(prompt, config.source, (turnId) => tagNewUserTurn(turnId, beforeCount));
+      }
 
       isProgrammaticInput = true;
       clickSendOrEnter(config, field);
@@ -790,8 +823,10 @@
       const prompt = readPrompt(field);
       if (!prompt) return;
 
-      const beforeCount = getUserTurnEls().length;
-      broadcastPrompt(prompt, config.source, (turnId) => tagNewUserTurn(turnId, beforeCount));
+      if (broadcastOnType) {
+        const beforeCount = getUserTurnEls().length;
+        broadcastPrompt(prompt, config.source, (turnId) => tagNewUserTurn(turnId, beforeCount));
+      }
       scheduleUrlReports();
     };
 

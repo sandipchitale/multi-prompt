@@ -41,33 +41,6 @@
 
       <div class="toggle-pair">
         <label
-          id="promptbar-row"
-          class="private-row"
-          title="Tiled Windows: also open a shared prompt box in a thin window docked below the tiled chatbot windows. Type once there and it broadcasts to every window — the same experience as Tiled in a Tab, and it works on Safari."
-        >
-          <input id="shared-prompt-bar" type="checkbox" />
-          <svg
-            class="private-icon"
-            xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-            <line x1="3" y1="15" x2="21" y2="15"></line>
-          </svg>
-          <span class="private-label">Shared prompt bar
-            <span class="private-hint">Tiled Windows</span>
-          </span>
-          <span class="toggle-indicator"></span>
-        </label>
-
-        <label
           id="private-row"
           class="private-row"
           title="Start every new chat in the site's private/temporary mode (clicked automatically as the chats open). Private chats are NOT saved to Saved Sessions."
@@ -98,32 +71,60 @@
         </label>
       </div>
 
-      <label
-        id="enter-option-row"
-        class="private-row"
-        title="Show the Enter-key option in each chatbot's prompt box: a small switch (with Ctrl+Enter shortcut) that swaps Enter and Shift+Enter, so Enter adds a new line and Shift+Enter sends to every pane. When off, the switch is hidden and Enter behaves normally (sends)."
-      >
-        <input id="enter-option" type="checkbox" />
-        <svg
-          class="private-icon"
-          xmlns="http://www.w3.org/2000/svg"
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+      <div class="toggle-pair">
+        <label
+          id="enter-option-row"
+          class="private-row"
+          title="Show the Enter-key option in each chatbot's prompt box: a small switch (with Ctrl+Enter shortcut) that swaps Enter and Shift+Enter, so Enter adds a new line and Shift+Enter sends to every pane. When off, the switch is hidden and Enter behaves normally (sends)."
         >
-          <polyline points="9 10 4 15 9 20"></polyline>
-          <path d="M20 4v7a4 4 0 0 1-4 4H4"></path>
-        </svg>
-        <span class="private-label">Enter-key option in prompt boxes
-          <span class="private-hint">per chatbot</span>
-        </span>
-        <span class="toggle-indicator"></span>
-      </label>
+          <input id="enter-option" type="checkbox" />
+          <svg
+            class="private-icon"
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <polyline points="9 10 4 15 9 20"></polyline>
+            <path d="M20 4v7a4 4 0 0 1-4 4H4"></path>
+          </svg>
+          <span class="private-label">Enter-key option in prompt boxes</span>
+          <span class="toggle-indicator"></span>
+        </label>
+
+        <label
+          id="broadcast-on-type-row"
+          class="private-row"
+          title="When on, typing directly in one chatbot's prompt box also sends to every other chatbot. When off (default), it sends only to that chatbot — use the shared prompt box to send to all."
+        >
+          <input id="broadcast-on-type" type="checkbox" />
+          <svg
+            class="private-icon"
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M4.93 19.07a10 10 0 0 1 0-14.14"></path>
+            <path d="M7.76 16.24a6 6 0 0 1 0-8.48"></path>
+            <path d="M16.24 7.76a6 6 0 0 1 0 8.48"></path>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            <circle cx="12" cy="12" r="2"></circle>
+          </svg>
+          <span class="private-label">Broadcast prompt to other chatbots</span>
+          <span class="toggle-indicator"></span>
+        </label>
+      </div>
 
       <div class="button-group">
         <div class="button-row">

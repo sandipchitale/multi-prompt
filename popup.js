@@ -54,8 +54,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionRenameSave = document.getElementById('session-rename-save');
   const sessionRenameCancel = document.getElementById('session-rename-cancel');
   const privateChatCheckbox = document.getElementById('private-chat');
-  const sharedPromptBarCheckbox = document.getElementById('shared-prompt-bar');
   const enterOptionCheckbox = document.getElementById('enter-option');
+  const broadcastOnTypeCheckbox = document.getElementById('broadcast-on-type');
   let savedSessions = [];
 
   // Private/temporary chats: the background reads this pref when launching new
@@ -64,20 +64,22 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set({ privateChatPref: privateChatCheckbox.checked });
   });
 
-  // Shared prompt bar (Tiled Windows only): a docked prompt window that
-  // broadcasts to every tiled chatbot window. Sent with new_chat / open_session.
-  if (sharedPromptBarCheckbox) {
-    sharedPromptBarCheckbox.addEventListener('change', () => {
-      chrome.storage.local.set({ sharedPromptBar: sharedPromptBarCheckbox.checked });
-    });
-  }
-
   // Enter-key option: gates whether the per-pane Enter/Shift+Enter swap switch is
   // injected into each chatbot's composer (content/enter-option.js reads this and
   // adds/removes the UI live, and only runs its key handling while it is on).
   if (enterOptionCheckbox) {
     enterOptionCheckbox.addEventListener('change', () => {
       chrome.storage.local.set({ enterOptionEnabled: enterOptionCheckbox.checked });
+    });
+  }
+
+  // Broadcast-on-typing: gates whether typing directly in one chatbot's own prompt
+  // box also sends to the other panes. Default OFF — typing stays per-chatbot; the
+  // shared prompt box remains the way to send to all. Content scripts (common.js)
+  // read this and react via storage.onChanged.
+  if (broadcastOnTypeCheckbox) {
+    broadcastOnTypeCheckbox.addEventListener('change', () => {
+      chrome.storage.local.set({ broadcastOnTypePref: broadcastOnTypeCheckbox.checked });
     });
   }
 
@@ -115,11 +117,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Load saved selections, order, and export format preference
-  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref', 'privateChatPref', 'sharedPromptBar', 'enterOptionEnabled'], (result) => {
+  chrome.storage.local.get(['selectedModels', 'modelOrder', 'exportFormatPref', 'privateChatPref', 'enterOptionEnabled', 'broadcastOnTypePref'], (result) => {
     privateChatCheckbox.checked = !!result.privateChatPref;
-    if (sharedPromptBarCheckbox) sharedPromptBarCheckbox.checked = !!result.sharedPromptBar;
     // Default ON (preserve current behavior: the switch is shown unless turned off).
     if (enterOptionCheckbox) enterOptionCheckbox.checked = result.enterOptionEnabled !== false;
+    // Default OFF: typing in a chatbot's box sends only to that chatbot.
+    if (broadcastOnTypeCheckbox) broadcastOnTypeCheckbox.checked = !!result.broadcastOnTypePref;
     const sel = Array.isArray(result.selectedModels) ? result.selectedModels : ALL_MODELS.slice();
     selected = new Set(sel);
 
@@ -427,8 +430,7 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.runtime.sendMessage({
         action: 'open_session',
         folderId: folderId,
-        screenInfo: currentScreenInfo(),
-        sharedPromptBar: !!(sharedPromptBarCheckbox && sharedPromptBarCheckbox.checked)
+        screenInfo: currentScreenInfo()
       }, (response) => {
         if (chrome.runtime.lastError || !response || response.status !== 'success') {
           alert('Could not open this session.');
@@ -589,8 +591,7 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.runtime.sendMessage({
         action: 'new_chat',
         models: selectedModels,
-        screenInfo: currentScreenInfo(),
-        sharedPromptBar: !!(sharedPromptBarCheckbox && sharedPromptBarCheckbox.checked)
+        screenInfo: currentScreenInfo()
       }, () => {
         const err = chrome.runtime.lastError;
         setTimeout(() => {
