@@ -37,19 +37,19 @@
   "content_scripts": [
     {
       "matches": ["*://gemini.google.com/*"],
-      "js": ["content/common.js", "content/gemini.js"],
+      "js": ["content/common.js", "content/gemini.js", "content/enter-option.js"],
       "run_at": "document_idle",
       "all_frames": true
     },
     {
       "matches": ["*://claude.ai/*"],
-      "js": ["content/common.js", "content/claude.js"],
+      "js": ["content/common.js", "content/claude.js", "content/enter-option.js"],
       "run_at": "document_idle",
       "all_frames": true
     },
     {
       "matches": ["*://chatgpt.com/*"],
-      "js": ["content/common.js", "content/chatgpt.js"],
+      "js": ["content/common.js", "content/chatgpt.js", "content/enter-option.js"],
       "run_at": "document_idle",
       "all_frames": true
     }
