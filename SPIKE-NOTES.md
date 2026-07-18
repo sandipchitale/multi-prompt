@@ -35,6 +35,29 @@ browser's real logged-in sessions — giving a single-window UX with a shared pr
 - Export: `handleExport` now queries registered workspace frames via `frameId` first,
   falling back to the managed-window tab path per model.
 
+### Multi-line prompts never reached Gemini (both modes)
+The fill-verification compared `readPrompt(field) === text.trim()`, i.e. **exact**
+string equality against `innerText`. But the innerText algorithm emits **two**
+newlines at a `<p>` boundary, and every one of these composers renders one `<p>`
+per line — so a multi-line prompt `"a\nb"` always read back as `"a\n\nb"` and the
+check declared a perfectly good fill a failure. (Single-line prompts matched on the
+first strategy, which is why this hid for so long.)
+
+The false negative was not harmless: `setContentEditableText` burned through all
+three strategies down to the **direct-DOM fallback**, which Gemini's Angular
+`rich-textarea` does not register — so its send button stayed disabled, the ~45s
+button poll expired, and the last-resort synthetic Enter was ignored. Result: the
+prompt silently never went to Gemini. ChatGPT/Claude (ProseMirror) survived because
+they re-render the fallback into their own model.
+
+Fix: compare via `sameText()` (collapse whitespace runs, then compare) at the three
+verification sites; `readPrompt` itself still returns the real text, since the
+native-typing broadcast path depends on it. The direct-DOM fallback also now builds
+**one `<p>` per line** (blank lines get a `<br>`) — a single `<p>` holding raw
+`"\n"`s renders as one flattened run. Negative controls (empty composer, truncated
+fill, different text) still compare unequal, so the "site cleared the composer" and
+retry paths are unaffected.
+
 ### Fixes applied after second test round
 Round 2: prompt 2 never appeared in the ChatGPT pane even though the status claimed
 "Sent to 3 pane(s)"; the Gemini pane separately lost its first conversation (reloaded
@@ -132,8 +155,53 @@ a `DEBUG` flag in `content/common.js`) were what isolated the real bugs.
   Claude features served from a.claude.ai (e.g. some artifact rendering) may not
   work in a pane. Workaround: reopen the workspace.
 - Datadog (Claude/ChatGPT analytics) logs "No storage available for session" —
-  third-party storage partitioning; analytics only, core chat unaffected.
+  third-party storage partitioning. Usually analytics-only, but the same
+  partitioning can reach account-gated features — see the Claude model-config
+  episode below.
 - "Blocked autofocusing on a <textarea> in a cross-origin subframe" — benign.
+
+### Observed (and since self-resolved): Claude's model picker empty / "model isn't available"
+**Status: not currently reproducing.** Seen 2026-07-17, gone 2026-07-18 with no
+extension change — so the trigger was on Chrome's or Claude's side, and the failure
+mode is worth keeping on record rather than treating as permanent. Kept here as a
+diagnostic, not as a shipped limitation (no UI warning is shown; see the end).
+
+In Tiled in a Tab, Claude runs as a **cross-origin iframe under a
+`chrome-extension://` top-level**, so Chrome gives it a **partitioned (empty) DOM
+storage** bucket keyed to that top-level site. Claude reads its available-model
+list / feature gates from `localStorage`/`IndexedDB`, so in the iframe that list
+comes back empty: the model picker renders with **no entries**, the app falls back
+to a hardcoded default (`claude-3-5-haiku-latest`) the account can't use, and the
+`…/completion` request **403s** with "This model isn't available right now."
+Login still works (session rides on SameSite=None cookies) and a conversation is
+even created, which is why it looks logged-in but can't send.
+
+What does **not** fix it:
+- **Logging in fresh inside the iframe** — confirmed by testing: the in-frame
+  login flow *completes*, yet you land in the exact same empty-picker / 403 state.
+  This proves the cause is the partitioned DOM storage, **not** authentication — a
+  valid session in an empty storage partition still has no model list to read.
+- **Storage Access API** (`document.requestStorageAccess()` from the pane content
+  script) — restores *cookies*, not partitioned DOM storage; the config still
+  loads empty. (Also, reloading the pane on the grant gesture raced Claude's
+  in-flight conversation create → spurious `title`/conversation 404s. Removed.)
+- **`chrome://flags/#third-party-storage-partitioning` → Disabled** — the flag no
+  longer exists in current Chrome, so this opt-out is gone. (Enterprise policies
+  `DefaultThirdPartyStoragePartitioningSetting` /
+  `ThirdPartyStoragePartitioningBlockedForOrigins` reportedly still exist —
+  untested here.)
+- There is **no extension API** to un-partition a framed origin's DOM storage.
+
+What (probably) did fix it: nothing we shipped. Candidates, in order — a Claude
+deploy that no longer reads the model list from partitioned storage; the
+partition getting populated by the in-frame login done while debugging (which
+would make the recovery profile-local, not universal); a Chrome change.
+
+Product decision: **do not** ship a per-tile warning for this. A hard-coded
+"Claude is broken here" badge was briefly added and then removed once the symptom
+disappeared — a permanent warning for an intermittent, third-party-controlled
+failure is worse than none. If this recurs and needs surfacing, gate it on
+**runtime detection** of the actual failure, not on a model allow-list.
 
 ### Promoted from spike into the product
 - Two explicit modes in the popup: **New Chat (Tiled Windows)** (the original

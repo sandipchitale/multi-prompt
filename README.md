@@ -29,6 +29,7 @@ It offers **two side-by-side layouts**:
 - **Saved Sessions Picker:** Reopen any saved session from the popup — as **Tiled Windows** or **Tiled in a Tab** — rename it inline, or delete it. Reopening re-tiles the saved conversations in order and **reattaches** the original turn ids, so exported alignment survives a reload.
 - **Visual Tiling Order & Drag-to-Reorder:** Select chatbots and arrange their left-to-right order from one row in the popup. In Tiled Windows mode, dragging a card physically slides the open windows to match.
 - **Export Chat History:** Export from the popup, from a Tiled-in-a-Tab tab's own **Export** button, or from the **shared prompt bar's** Export button, into Markdown (`.md`) or a clean PDF / print template grouped by prompt.
+- **Enter-key option:** Both shared prompt boxes — the Tiled-in-a-Tab bottom bar and the Tiled-Windows prompt bar — carry the same **Enter:** switch found in each chatbot's own composer. Flip it (or press **Ctrl+Enter**) and Enter adds a new line while Shift+Enter sends. The setting is shared, so changing it in any one place changes all of them. Turn the whole feature off from the popup's **Enter-key option in prompt boxes** toggle and the switches disappear, leaving Enter to send.
 - **Theme:** Auto / Light / Dark — switchable from the popup, the Tiled-in-a-Tab bottom bar, or the shared prompt bar, and kept in sync across the popup, the export view, and every workspace tab and bar.
 
 ![Multi-Prompt Bookmarks](screenshots/multi-prompt-bookmarks.png)
@@ -50,6 +51,7 @@ The chatbot sites forbid being embedded in a frame (via `X-Frame-Options` and CS
 Notes and limitations:
 
 - **Sign in first.** Logging in (and some session refreshes) can't happen inside an embedded frame; sign in to each chatbot in a normal tab beforehand. The panes then share that session.
+- **Account-gated features can be flaky in a tab.** An embedded site's storage is isolated by the browser from the same site's storage in a normal tab, so anything a chatbot caches there (model lists, feature gates) may be missing in a tile. This has been seen to leave Claude's model picker empty and its sending blocked with "This model isn't available right now" — it recovered on its own, and there's no extension-side fix either way. Core chat works; if a tile misbehaves, use **New Chat (Tiled Windows)** for that chatbot.
 - **Chrome only.** Safari's `declarativeNetRequest` cannot remove *response* headers at all ([WebKit bug 275158](https://webkit.org/b/275158)), so Tiled in a Tab cannot work there; the extension probes for this at open time and explains, rather than showing dead panes. Tiled Windows remains the Safari path — and the **shared prompt bar** gives it the same "type once, broadcast to all" experience without any framing. Browsers that can remove response headers but lack per-tab (`tabIds`) rule scoping, such as Firefox, fall back to a rule that applies browser-wide — but still only while a workspace tab is open.
 - **Security trade-off.** Removing the CSP also drops the framed page's own in-frame XSS protections. The rule is session-only, sub-frame-only, and pinned to the workspace tab to keep this contained.
 
@@ -91,7 +93,7 @@ background.js        Service worker: tiling, broadcast, turn ids, sessions, DNR 
 popup.html/.css/.js  Popup dashboard (model selection, modes, export, sessions)
 align.js             Shared cross-model turn alignment + export helpers
 bar.css              Shared bottom-bar styling (workspace composer + prompt bar)
-bar-common.js        Shared bottom-bar JS (theme, prompt autosize, delivery badges, export-format pref)
+bar-common.js        Shared bottom-bar JS (theme, prompt autosize, delivery badges, export-format + Enter-key prefs)
 workspace.html/.js   Tiled-in-a-Tab page: iframe tiles (reorder/collapse/maximize), splitters, shared prompt box, Export
 promptbar.html/.js   Tiled-Windows shared prompt bar: docked app window, broadcasts to every tiled window (Private/Export/theme)
 export.html/.js      Markdown → print/PDF transcript view

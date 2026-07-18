@@ -534,12 +534,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   sendBtn.addEventListener('click', send);
-  promptEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      send();
-    }
-  });
+  // Owns the prompt's Enter handling, including the optional Enter/Shift+Enter
+  // swap shared with the switch injected into each chatbot's own composer.
+  MPBar.setupEnterOption(document.getElementById('ws-enter'), promptEl, send,
+    'every pane');
 
   // --- Export this tab's chats ----------------------------------------------
   const exportBtn = document.getElementById('ws-export');

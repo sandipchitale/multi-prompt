@@ -212,6 +212,73 @@ body {
   color: #7c3aed;
   box-shadow: 0 0 8px rgba(124, 58, 237, 0.35);
 }
+/* Enter-key option — the bar-native twin of the switch content/enter-option.js
+   injects into each chatbot's composer, deliberately styled the same way
+   (label, "send" icon, sliding switch, "newline" icon) so the two read as one
+   control. Unchromed on purpose: it annotates the prompt rather than joining
+   the row of pills, and sits right beside the box it governs. JS hides it when
+   the popup's Enter-key option is off. */
+.bar-enter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--muted);
+  opacity: 0.75;
+  transition: opacity 0.2s ease;
+}
+.bar-enter:hover, .bar-enter:focus-within { opacity: 1; }
+.bar-enter[hidden] { display: none; }
+.bar-enter-label { font-size: 13px; font-weight: 500; }
+.bar-enter svg { display: block; }
+/* The sliding switch itself: the checkbox stays focusable but invisible, the
+   .slider is the track and .knob the thumb. */
+.bar-enter-switch {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  margin: 0 2px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.bar-enter-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  pointer-events: none;
+}
+.bar-enter-switch .slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background 0.2s ease;
+}
+.bar-enter-switch .knob {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease;
+}
+.bar-enter-switch input:checked + .slider { background: #7c3aed; }
+.bar-enter-switch input:checked + .slider .knob { transform: translateX(14px); }
+.bar-enter-switch input:focus-visible + .slider {
+  outline: 2px solid #7c3aed;
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bar-enter, .bar-enter-switch .slider, .bar-enter-switch .knob { transition: none; }
+}
+
 /* Theme selector pill, matching the popup's segmented toggle. */
 .theme-toggle {
   height: 54px;

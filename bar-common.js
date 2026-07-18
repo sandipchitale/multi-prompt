@@ -62,6 +62,83 @@
     });
   }
 
+  // Enter-key option for a bar's own prompt box — the bar-native twin of the
+  // switch content/enter-option.js injects into each chatbot's composer. Both
+  // read/write the SAME `paneSwapEnter` key (and honour the same popup gate,
+  // `enterOptionEnabled`), so flipping it anywhere flips it everywhere.
+  //   false (default) = Enter sends, Shift+Enter adds a new line
+  //   true            = Enter adds a new line, Shift+Enter sends
+  // Ctrl+Enter toggles, matching the injected switch's shortcut.
+  //
+  // Owns the prompt's Enter handling too, so the caller doesn't also bind one.
+  //   containerEl : the .bar-enter control (holds one checkbox)
+  //   promptEl    : the bar's textarea
+  //   onSend      : called when the keystroke means "send"
+  //   targetNoun  : what a send reaches, for the labels ("every pane")
+  const SWAP_KEY = 'paneSwapEnter';
+  const GATE_KEY = 'enterOptionEnabled';
+  function setupEnterOption(containerEl, promptEl, onSend, targetNoun) {
+    const noun = targetNoun || 'every pane';
+    const checkbox = containerEl.querySelector('input[type="checkbox"]');
+    // enter-option.js prefers `sync` for the swap value; match it or the two
+    // controls would read different stores and silently disagree.
+    const swapArea = chrome.storage.sync || chrome.storage.local;
+    let swap = false;
+    let gateOn = true;
+
+    function render() {
+      if (checkbox) checkbox.checked = swap;
+      // Gated off = the whole feature is inactive, so hide the control rather
+      // than show a switch that no longer changes anything.
+      containerEl.hidden = !gateOn;
+      // Keep the wording honest everywhere — both name the current send key.
+      const sendKey = (gateOn && swap) ? 'Shift+Enter' : 'Enter';
+      const newlineKey = (gateOn && swap) ? 'Enter' : 'Shift+Enter';
+      promptEl.placeholder = 'Type a prompt — ' + sendKey + ' sends it to ' + noun +
+        ' (' + newlineKey + ' for a newline)';
+      containerEl.title = sendKey + ' sends to ' + noun + '; ' + newlineKey +
+        ' adds a new line (Ctrl+Enter toggles)';
+    }
+
+    swapArea.get({ [SWAP_KEY]: false }, (items) => {
+      swap = !!(items && items[SWAP_KEY]);
+      render();
+    });
+    chrome.storage.local.get({ [GATE_KEY]: true }, (items) => {
+      gateOn = !items || items[GATE_KEY] !== false;
+      render();
+    });
+    chrome.storage.onChanged.addListener((changes) => {
+      if (changes[SWAP_KEY]) { swap = !!changes[SWAP_KEY].newValue; render(); }
+      if (changes[GATE_KEY]) { gateOn = changes[GATE_KEY].newValue !== false; render(); }
+    });
+
+    function setSwap(value) {
+      swap = value;
+      render();
+      swapArea.set({ [SWAP_KEY]: value });
+    }
+
+    if (checkbox) {
+      checkbox.addEventListener('change', (e) => setSwap(e.target.checked));
+    }
+
+    promptEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.isComposing) return;
+      if (gateOn && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        setSwap(!swap);
+        return;
+      }
+      // Gated off falls back to the plain behaviour (Enter sends), exactly as
+      // content/enter-option.js stands down when the popup switch is off.
+      const sends = (gateOn && swap) ? e.shiftKey : !e.shiftKey;
+      if (!sends) return; // let the textarea insert the newline itself
+      e.preventDefault();
+      onSend();
+    });
+  }
+
   // Per-target delivery badges (… sending / ✓ delivered / ✗ failed). The caller
   // fills `tracker.badges[model] = badgeEl` as it builds its titlebars/chips.
   // The background forwards each target's result via `resultAction`, addressed
@@ -149,6 +226,7 @@
     setupTheme: setupTheme,
     autosize: autosize,
     setupExportFormat: setupExportFormat,
+    setupEnterOption: setupEnterOption,
     createResultTracker: createResultTracker
   };
 })();

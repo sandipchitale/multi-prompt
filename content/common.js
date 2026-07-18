@@ -189,6 +189,29 @@
     return (value || '').trim();
   }
 
+  // "Did the editor accept the text I put in it?" — deliberately whitespace
+  // tolerant, because a rich editor never reads back byte-identical.
+  //
+  // The specific trap: editors that render one <p> per line (Gemini's
+  // rich-textarea, ProseMirror) read back through innerText, and the innerText
+  // algorithm emits TWO newlines at a <p> boundary. So a multi-line prompt
+  // "a\nb" always reads back as "a\n\nb" and a strict === compare says the fill
+  // failed — even though it plainly succeeded. That false negative was not
+  // harmless: setContentEditableText would burn through all three strategies and
+  // land on the direct-DOM fallback, which Gemini's Angular composer does not
+  // register, leaving its send button disabled forever (~45s of polling, then a
+  // synthetic Enter the site ignores). Net effect: multi-line prompts silently
+  // never reached Gemini, in both tiling modes. Single-line prompts matched on
+  // the first strategy and so never hit any of this.
+  //
+  // Collapsing whitespace runs can call two prompts that differ only in spacing
+  // "the same", which is the right trade: this only ever gates "stop retrying /
+  // go ahead and submit", never what text gets sent.
+  function sameText(a, b) {
+    const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+    return norm(a) === norm(b);
+  }
+
   // Set the editor text safely. For form controls we use the native value
   // setter so React notices the change; contenteditables go through
   // setContentEditableText below.
@@ -229,7 +252,7 @@
   // strategies that go through the editor's own input pipeline first, verifying
   // after each, and only fall back to direct DOM mutation as a last resort.
   function setContentEditableText(field, text) {
-    const matches = () => readPrompt(field) === text.trim();
+    const matches = () => sameText(readPrompt(field), text);
 
     // 1) execCommand('insertText'): deprecated, but routes through beforeinput,
     // which is exactly how these editors ingest typing.
@@ -264,10 +287,17 @@
     // 3) Direct DOM mutation (never innerHTML, so markup in prompts stays
     // verbatim). Frameworks may revert this on their next render; the
     // send-button wait in submitInjectedPrompt gives them time to settle.
+    // One block per line: a lone <p> holding raw "\n"s renders as a single run
+    // of text (HTML collapses them), so a multi-line prompt would arrive at the
+    // model visually and structurally flattened.
     field.replaceChildren();
-    const p = document.createElement('p');
-    p.textContent = text;
-    field.appendChild(p);
+    text.split('\n').forEach((line) => {
+      const p = document.createElement('p');
+      // An empty <p> has no line box, so blank lines would vanish.
+      if (line) p.textContent = line;
+      else p.appendChild(document.createElement('br'));
+      field.appendChild(p);
+    });
     const range = document.createRange();
     range.selectNodeContents(field);
     range.collapse(false);
@@ -399,7 +429,7 @@
         if (settled) return;
         if (sentSignal()) { finish(); return; }
         const editor = findEditor(config);
-        if (!editor || readPrompt(editor) !== expected) {
+        if (!editor || !sameText(readPrompt(editor), expected)) {
           // Composer no longer holds our prompt: the site accepted and cleared
           // it. Don't resend; finish() confirms via the rendered turn.
           finish();
@@ -485,7 +515,7 @@
       let fillAttempts = 0;
       const submitWhenFilled = () => {
         const f = findEditor(config) || field;
-        if (readPrompt(f) !== expected && fillAttempts++ < 3) {
+        if (!sameText(readPrompt(f), expected) && fillAttempts++ < 3) {
           dbg('composer did not accept the fill; re-inserting', fillAttempts);
           setEditorText(f, prompt);
           setTimeout(submitWhenFilled, 600);

@@ -129,6 +129,29 @@
       <button id="send" type="button">Send</button>
     </div>
     <span id="status"></span>
+    <!-- Enter-key option for THIS prompt box. Shares the `paneSwapEnter` pref with
+         the switch content/enter-option.js injects into each chatbot's composer
+         (and with the Tiled-Windows prompt bar), so all of them stay in lockstep.
+         Hidden by JS when the popup's Enter-key option is off. -->
+    <div class="bar-enter" id="ws-enter">
+      <span class="bar-enter-label">Enter:</span>
+      <span title="Enter sends the prompt">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+          fill="currentColor" aria-hidden="true">
+          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+        </svg>
+      </span>
+      <label class="bar-enter-switch">
+        <input type="checkbox" />
+        <span class="slider"><span class="knob"></span></span>
+      </label>
+      <span title="Enter adds a new line">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+          fill="currentColor" aria-hidden="true">
+          <path d="M19 7v4H5.83l3.58-3.59L8 6l-6 6 6 6 1.41-1.41L5.83 13H21V7h-2z"></path>
+        </svg>
+      </span>
+    </div>
     <button id="ws-private" class="bar-private" type="button"
       title="Switch all panes to private/temporary chat — this chat will NOT be saved to Saved Sessions">
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
